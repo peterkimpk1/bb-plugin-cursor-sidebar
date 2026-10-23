@@ -381,3 +381,39 @@
     animation: none !important;
   }
 }
+
+/* Threads | Bots switch. The thumb slides on the list's own move curve
+   (AnimatedList's MOVE_EASING), a touch faster since it travels one tab. */
+.cs-tab-thumb {
+  transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+/* "Needs you": the count of a bot's conversations waiting on the user. The
+   tone is the same warning hue the closed-project badge uses for input. */
+.cs-needs-you-count {
+  display: inline-flex;
+  min-width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: var(--warning-text, #d97706);
+  background-color: color-mix(in oklab, var(--warning-text, #d97706) 16%, transparent);
+}
+
+/* A hairline ring keeps a pale avatar colour from dissolving into the sidebar. */
+[data-cursor-sidebar-root] .cs-bot-heading .cs-bot-avatar > span:first-child {
+  box-shadow: 0 0 0 1px color-mix(in oklab, var(--sidebar-foreground) 12%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .cs-tab-thumb {
+    transition: none !important;
+  }
+}

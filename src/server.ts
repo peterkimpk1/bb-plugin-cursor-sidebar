@@ -85,7 +85,87 @@ const sidebarViewSchema = z
 export type SidebarView = z.infer<typeof sidebarViewSchema>;
 export { sidebarViewSchema };
 
+/**
+ * The Bots tab reads bots from the separate `bots-sidebar` plugin. A plugin's
+ * app can only call its own RPC, so this server forwards to bots-sidebar's
+ * `bots_list` / `conversation_create` through `bb.sdk.plugins.callRpc`. Only the
+ * fields the tab draws are kept, and every optional piece degrades to null
+ * instead of failing the whole list, so a newer bots-sidebar still renders.
+ */
+export const BOTS_PLUGIN_ID = "bots-sidebar";
+
+const botLaunchPresetSchema = z
+  .object({
+    execution: z
+      .object({
+        providerId: z.string().min(1),
+        model: z.string().min(1),
+        reasoningLevel: z.string().min(1),
+        serviceTier: z.string().min(1).optional(),
+        permissionMode: z.enum(["accept-edits", "auto", "full"]).nullable(),
+      })
+      .nullable(),
+    workspace: z.enum(["checkout", "worktree"]),
+    initialPrompt: z.string(),
+  })
+  .nullable()
+  .optional()
+  .catch(null);
+
+const botSchema = z.object({
+  id: z.string().min(1),
+  name: z.string(),
+  role: z.string().catch(""),
+  avatar: z
+    .object({ color: z.string().regex(/^#[0-9a-fA-F]{6}$/) })
+    .nullable()
+    .optional()
+    .catch(null),
+  hostId: z.string().nullable().optional().catch(null),
+  mainThreadId: z.string().nullable().optional().catch(null),
+  threadOrder: z.array(z.string()).optional().catch(undefined),
+  linkedProjectIds: z.array(z.string()).optional().catch(undefined),
+  legacyHomeProjectId: z.string().nullable().optional().catch(null),
+  launchPreset: botLaunchPresetSchema,
+});
+export type BotSummary = z.infer<typeof botSchema>;
+
+const botBindingSchema = z.object({ threadId: z.string().min(1), botId: z.string().min(1) });
+const botProjectOwnerSchema = z.object({ projectId: z.string().min(1), botId: z.string().min(1) });
+
+/** The subset of bots-sidebar's `bots_list` output this plugin reads. */
+const botsListUpstreamSchema = z.object({
+  bots: z.array(botSchema),
+  threadBindings: z.array(botBindingSchema),
+  personalProjectId: z.string().nullable().optional().catch(null),
+  projectOwners: z.array(botProjectOwnerSchema).optional().catch(undefined),
+});
+
+export const botsListOutputSchema = z.object({
+  /** False when bots-sidebar is not installed, disabled, or its call failed. */
+  available: z.boolean(),
+  reason: z.string().nullable(),
+  bots: z.array(botSchema),
+  threadBindings: z.array(botBindingSchema),
+  personalProjectId: z.string().nullable(),
+  projectOwners: z.array(botProjectOwnerSchema),
+});
+export type BotsListResult = z.infer<typeof botsListOutputSchema>;
+
 export const cursorSidebarRpcContract = defineRpcContract({
+  botsList: {
+    input: z.object({}),
+    output: botsListOutputSchema,
+  },
+  botsConversationCreate: {
+    // The request is bots-sidebar's (and the SDK's) NewThreadRequest; it is
+    // validated by bots-sidebar, the owner of that contract, not re-declared here.
+    input: z.object({
+      botId: z.string().trim().min(1),
+      request: z.record(z.string(), z.json()),
+    }),
+    output: z.object({ threadId: z.string() }),
+  },
   listWorkspaces: {
     input: z.object({ environmentIds: z.array(z.string().min(1)).max(100) }),
     output: z.object({
@@ -319,6 +399,42 @@ export default function plugin(bb: BbPluginApi) {
   }
 
   bb.rpc.register(cursorSidebarRpcContract, {
+    async botsList(): Promise<BotsListResult> {
+      try {
+        const upstream = await bb.sdk.plugins.callRpc({
+          pluginId: BOTS_PLUGIN_ID,
+          method: "bots_list",
+          input: null,
+          outputSchema: botsListUpstreamSchema,
+        });
+        return {
+          available: true,
+          reason: null,
+          bots: upstream.bots,
+          threadBindings: upstream.threadBindings,
+          personalProjectId: upstream.personalProjectId ?? null,
+          projectOwners: upstream.projectOwners ?? [],
+        };
+      } catch (cause) {
+        // Not installed, disabled, or failing: the tab shows its empty state.
+        return {
+          available: false,
+          reason: cause instanceof Error ? cause.message : String(cause),
+          bots: [],
+          threadBindings: [],
+          personalProjectId: null,
+          projectOwners: [],
+        };
+      }
+    },
+    async botsConversationCreate({ botId, request }) {
+      return bb.sdk.plugins.callRpc({
+        pluginId: BOTS_PLUGIN_ID,
+        method: "conversation_create",
+        input: { botId, request },
+        outputSchema: z.object({ threadId: z.string().min(1) }),
+      });
+    },
     async listWorkspaces({ environmentIds }) {
       const workspaces = await Promise.all(
         [...new Set(environmentIds)].map(async (environmentId) => {

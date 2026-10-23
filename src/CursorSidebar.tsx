@@ -104,6 +104,10 @@ import { Drawer } from "./Drawer";
 import { useShortcutGuide } from "./useShortcutGuide";
 import { ICON_BTN } from "./icon-btn";
 import { ShowMoreButton } from "./ShowMoreButton";
+import { SidebarTabSwitch, useSidebarTab } from "./SidebarTabs";
+import { useBots } from "./useBots";
+import { membersByBot } from "./bots";
+import { BotsView, useBotModels } from "./BotsView";
 
 
 /**
@@ -973,6 +977,37 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
     [ctx, projects, sections],
   );
 
+  // Bots tab. Bots come from the bots-sidebar plugin; their conversations are
+  // this same visible feed, joined through bots-sidebar's thread bindings.
+  const [tab, setTab] = useSidebarTab();
+  const visibleKey = useMemo(() => visible.map((thread) => thread.id).join(","), [visible]);
+  const bots = useBots(visibleKey);
+  const botBindings = bots.status === "ready" ? bots.threadBindings : null;
+  const botMembers = useMemo(
+    () => membersByBot(visible, botBindings ?? []),
+    [botBindings, visible],
+  );
+  const botModels = useBotModels(bots, botMembers);
+  const botsNeedingYou = useMemo(
+    () => botModels.reduce((total, model) => total + model.facts.needsYou, 0),
+    [botModels],
+  );
+  const expandedBots = usePersistentIds("bb-plugin-cursor-sidebar:expanded-bots:v1");
+  // Bot rows reuse the thread row, but a bot's list has no manual order or
+  // folders to drop into, so a drag there would have nowhere to commit.
+  const botsCtx = useMemo<TreeContext>(
+    () => ({
+      ...ctx,
+      canDragThreads: false,
+      onThreadDragStart: () => {},
+      onThreadDragPickUp: () => {},
+      dropTarget: null,
+      folderDropTarget: null,
+      childDropTarget: null,
+    }),
+    [ctx],
+  );
+
   const markAllRead = useCallback(async () => {
     if (unreadOrdinary.length === 0) return;
     setMarkReadBusy(true);
@@ -1219,10 +1254,18 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
       onMarkAllRead={() => { void markAllRead(); }}
     >
     <div data-cursor-sidebar-root="" className="flex min-h-0 flex-1 flex-col">
-      <SidebarViewSyncNotice sync={sidebarView.sync} onRetry={sidebarView.retry} />
+      <SidebarTabSwitch
+        tab={tab}
+        onChange={setTab}
+        badges={{ bots: botsNeedingYou }}
+      />
+      {tab === "threads" ? <SidebarViewSyncNotice sync={sidebarView.sync} onRetry={sidebarView.retry} /> : null}
 
       <div
         ref={listRef}
+        id={`cs-tabpanel-${tab}`}
+        role="tabpanel"
+        aria-labelledby={`cs-tab-${tab}`}
         data-fade-more={listHasMore ? "true" : undefined}
         onKeyDown={handleListKeyDown}
         className="min-h-0 flex-1 overflow-y-auto px-1.5 pt-2 pb-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
@@ -1270,6 +1313,17 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
               setIconPicker(null);
             }}
           />
+          {tab === "bots" ? (
+            <div key="bots" className="cs-grouping-swap">
+              <BotsView
+                bots={bots}
+                models={botModels}
+                ctx={botsCtx}
+                expandedBots={expandedBots}
+                onRefresh={() => { void bots.refresh(); }}
+              />
+            </div>
+          ) : (
           <AnimatedList
             as="div"
             key={view.groupBy}
@@ -1333,6 +1387,7 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
               </>
             )}
           </AnimatedList>
+          )}
       </div>
     </div>
     </SidebarViewMenuRoot>

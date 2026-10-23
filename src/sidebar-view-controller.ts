@@ -33,6 +33,10 @@ export interface SidebarViewController {
   load: () => Promise<void>;
 }
 
+const READ_RETRY_BASE_MS = 1_000;
+const READ_RETRY_MAX_MS = 30_000;
+const READ_FAILURES_BEFORE_NOTICE = 3;
+
 export function createSidebarViewController(
   transport: SidebarViewTransport,
 ): SidebarViewController {
@@ -52,6 +56,13 @@ export function createSidebarViewController(
    */
   let mutationEpoch = 0;
   let readGeneration = 0;
+  /**
+   * Consecutive failed reads. A plugin reload or a dropped connection to the bb
+   * server fails one read; retrying quietly with backoff recovers without the
+   * user pressing Retry. The banner shows only once failures persist.
+   */
+  let readFailures = 0;
+  let retryTimer: ReturnType<typeof setTimeout> | null = null;
   const listeners = new Set<() => void>();
 
   const notify = (): void => {
@@ -65,7 +76,7 @@ export function createSidebarViewController(
     if (failure === "save") {
       return { kind: "unsaved", store: storeReadable ? "readable" : "unreadable" };
     }
-    if (failure === "read") return { kind: "unreadable" };
+    if (failure === "read" && readFailures >= READ_FAILURES_BEFORE_NOTICE) return { kind: "unreadable" };
     if (pending !== null || writing) return { kind: "saving" };
     return { kind: "synced" };
   };
@@ -80,6 +91,7 @@ export function createSidebarViewController(
         stored === null ? DEFAULT_SIDEBAR_VIEW : coerceSidebarView(stored);
       acknowledged = serverView;
       storeReadable = true;
+      readFailures = 0;
       if (failure === "read") failure = null;
       // A local change the server has not accepted stays on top of this read,
       // and a failed save keeps its place until it is written. A successful
@@ -90,8 +102,19 @@ export function createSidebarViewController(
       if (generation !== readGeneration || epoch !== mutationEpoch) return;
       storeReadable = false;
       if (failure !== "save") failure = "read";
+      readFailures += 1;
       notify();
+      scheduleRetry();
     }
+  };
+
+  const scheduleRetry = (): void => {
+    if (retryTimer !== null || listeners.size === 0) return;
+    const delay = Math.min(READ_RETRY_MAX_MS, READ_RETRY_BASE_MS * 2 ** (readFailures - 1));
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      if (failure === "read" && listeners.size > 0) void load();
+    }, delay);
   };
 
   const flush = async (): Promise<void> => {

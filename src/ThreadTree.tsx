@@ -405,14 +405,15 @@ export function ShelfList({
   // block, so a child's native pin reads as the family's. The set comes from
   // the home's complete shelf, not the bounded render, so a pin on a child
   // past the preview page lifts the family here exactly as the block does.
+  // An ungrouped list (a bot's conversations) has no Pinned block to lift
+  // into, but its pin toggle still has to read the family's real state.
   const pinnedFamilyRoots = useMemo(() => {
     const pinned = new Set<string>();
-    if (!grouping) return pinned;
     for (const thread of section.byShelf[shelf]) {
       if (thread.isPinned) pinned.add(familyRootId(parentOf, thread.id));
     }
     return pinned;
-  }, [grouping, parentOf, section, shelf]);
+  }, [parentOf, section, shelf]);
   // The pin label and toggle follow the family's lifted native state, never the
   // cluster the row renders in.
   const rootPinnedOf = useCallback(

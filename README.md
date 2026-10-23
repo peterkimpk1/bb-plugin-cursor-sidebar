@@ -66,6 +66,27 @@ The pin and archive icons stay hidden on touch. Nothing reveals them without
 hover, and the 44px targets a phone needs do not fit in a row, so a swipe or
 the actions menu does that work instead.
 
+## Bots tab
+
+A Threads | Bots switch sits at the top of the list. Threads is the view
+described above. Bots lists the bots from the
+[Bots Sidebar](https://github.com/tobi/bb-bots-sidebar) plugin, in its order.
+Each window remembers which tab it shows.
+
+| | What it does |
+| --- | --- |
+| **Bot row** | Avatar colour and initial, name and role. A spinner on the avatar while any of its conversations works |
+| **Needs you count** | Conversations of that bot waiting on your input, or with an unread failure |
+| **Click the bot** | Opens its main conversation, or the first in its order |
+| **Chevron** | Shows its conversations, newest activity first, with child threads nested. These are the Threads rows, so open, pin, archive and the actions menu work the same |
+| **+** | Starts a conversation through Bots Sidebar, so the new thread belongs to the bot |
+
+A conversation belongs to a bot when Bots Sidebar bound it to that bot, or when
+its nearest bound parent was. Bots Sidebar must be installed and running. This
+plugin reads it through its own server, because a plugin's frontend can only
+call its own RPC. Without Bots Sidebar, the tab says so and the Threads tab is
+unchanged.
+
 ## Requirements
 
 BB 0.42 or newer. The plugin fills BB's experimental thread-list slot, which
