@@ -82,14 +82,26 @@ export function useBots(threadKey: string): BotsState & { refresh: () => Promise
 
 export type BotAvatarMarkup = Record<string, { idle: string; working: string }>;
 
+/**
+ * Last good avatar markup, kept across mounts: switching tabs remounts the
+ * Bots view, and starting empty showed initials until the next fetch.
+ */
+let avatarCache: BotAvatarMarkup = {};
+
 /** bots-sidebar's own avatar SVGs, re-read only when a bot's appearance changes. */
 export function useBotAvatars(appearanceKey: string, size: number): BotAvatarMarkup {
   const rpc = useRpc<typeof cursorSidebarRpcContract>();
-  const [avatars, setAvatars] = useState<BotAvatarMarkup>({});
+  const [avatars, setAvatars] = useState<BotAvatarMarkup>(avatarCache);
   useEffect(() => {
+    if (!appearanceKey) return;
     let cancelled = false;
     void rpc.call("botsAvatars", { size }).then(
-      (result) => { if (!cancelled) setAvatars(result.avatars); },
+      (result) => {
+        // An empty answer means bots-sidebar couldn't render; keep what we have.
+        if (cancelled || Object.keys(result.avatars).length === 0) return;
+        avatarCache = { ...avatarCache, ...result.avatars };
+        setAvatars(avatarCache);
+      },
       () => {},
     );
     return () => { cancelled = true; };
