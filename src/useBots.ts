@@ -79,3 +79,20 @@ export function useBots(threadKey: string): BotsState & { refresh: () => Promise
 
   return useMemo(() => ({ ...state, refresh }), [refresh, state]);
 }
+
+export type BotAvatarMarkup = Record<string, { idle: string; working: string }>;
+
+/** bots-sidebar's own avatar SVGs, re-read only when a bot's appearance changes. */
+export function useBotAvatars(appearanceKey: string, size: number): BotAvatarMarkup {
+  const rpc = useRpc<typeof cursorSidebarRpcContract>();
+  const [avatars, setAvatars] = useState<BotAvatarMarkup>({});
+  useEffect(() => {
+    let cancelled = false;
+    void rpc.call("botsAvatars", { size }).then(
+      (result) => { if (!cancelled) setAvatars(result.avatars); },
+      () => {},
+    );
+    return () => { cancelled = true; };
+  }, [rpc, appearanceKey, size]);
+  return avatars;
+}

@@ -20,7 +20,7 @@ import { CONVERSATION_PAGE_SIZE, DEFAULT_INACTIVE_CONVERSATIONS, planConversatio
 import type { PersistentIds } from "./collapse";
 import type { ProjectSectionData } from "./forest";
 import type { BotSummary, cursorSidebarRpcContract } from "./server";
-import type { BotsState } from "./useBots";
+import { useBotAvatars, type BotAvatarMarkup, type BotsState } from "./useBots";
 import {
   avatarInk,
   botFacts,
@@ -74,6 +74,8 @@ export function BotsView({
 }) {
   const actions = useSidebarThreadActions();
   const [composing, setComposing] = useState<BotSummary | null>(null);
+  const appearanceKey = bots.status === "ready" ? JSON.stringify(bots.bots.map((bot) => [bot.id, bot.avatar])) : "";
+  const avatars = useBotAvatars(appearanceKey, AVATAR_SIZE);
 
   if (bots.status === "loading") {
     return (
@@ -115,6 +117,7 @@ export function BotsView({
               ctx.onNavigate();
             }}
             onNewConversation={() => startConversation(model.bot)}
+            avatar={avatars[model.bot.id] ?? null}
           />
         ))}
       </AnimatedList>
@@ -152,7 +155,22 @@ function BotsEmpty({ title, detail }: { title: string; detail: string }) {
   );
 }
 
-function BotAvatar({ bot, working }: { bot: BotSummary; working: boolean }) {
+/** bots-sidebar's character, at the size its own sidebar uses for compact rows. */
+const AVATAR_SIZE = 26;
+
+function BotAvatar({ bot, working, markup }: { bot: BotSummary; working: boolean; markup: BotAvatarMarkup[string] | null }) {
+  if (markup) {
+    // The SVG comes from bots-sidebar's server (its own avatar component, rendered
+    // statically); its classes drive the idle and working animations in app.css.
+    return (
+      <span
+        aria-label={working ? "Working" : undefined}
+        role={working ? "img" : undefined}
+        className="cs-bot-character flex size-[26px] shrink-0 items-center justify-center"
+        dangerouslySetInnerHTML={{ __html: working ? markup.working : markup.idle }}
+      />
+    );
+  }
   const color = bot.avatar?.color ?? null;
   return (
     <span className="cs-bot-avatar relative flex size-5 shrink-0 items-center justify-center">
@@ -186,7 +204,9 @@ function BotRow({
   onToggle,
   onOpen,
   onNewConversation,
+  avatar,
 }: {
+  avatar: BotAvatarMarkup[string] | null;
   model: BotModel;
   ctx: TreeContext;
   open: boolean;
@@ -258,7 +278,7 @@ function BotRow({
               )}
             />
           </button>
-          <BotAvatar bot={bot} working={facts.working} />
+          <BotAvatar bot={bot} working={facts.working} markup={avatar} />
           <button
             type="button"
             title={target !== null ? `Open ${bot.name}` : `Start a conversation with ${bot.name}`}

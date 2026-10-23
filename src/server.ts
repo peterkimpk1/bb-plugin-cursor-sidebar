@@ -117,7 +117,12 @@ const botSchema = z.object({
   name: z.string(),
   role: z.string().catch(""),
   avatar: z
-    .object({ color: z.string().regex(/^#[0-9a-fA-F]{6}$/) })
+    .object({
+      color: z.string().regex(/^#[0-9a-fA-F]{6}$/),
+      shape: z.string().optional(),
+      expression: z.string().optional(),
+      motion: z.string().optional(),
+    })
     .nullable()
     .optional()
     .catch(null),
@@ -156,6 +161,11 @@ export const cursorSidebarRpcContract = defineRpcContract({
   botsList: {
     input: z.object({}),
     output: botsListOutputSchema,
+  },
+  botsAvatars: {
+    // bots-sidebar renders its own avatars to static SVG; this plugin only shows them.
+    input: z.object({ size: z.number().int().min(12).max(96) }),
+    output: z.object({ avatars: z.record(z.string(), z.object({ idle: z.string(), working: z.string() })) }),
   },
   botsConversationCreate: {
     // The request is bots-sidebar's (and the SDK's) NewThreadRequest; it is
@@ -399,6 +409,22 @@ export default function plugin(bb: BbPluginApi) {
   }
 
   bb.rpc.register(cursorSidebarRpcContract, {
+    async botsAvatars({ size }) {
+      try {
+        const upstream = await bb.sdk.plugins.callRpc({
+          pluginId: BOTS_PLUGIN_ID,
+          method: "bot_avatar_markup",
+          input: { size },
+          outputSchema: z.object({
+            avatars: z.array(z.object({ botId: z.string(), idle: z.string(), working: z.string() })),
+          }),
+        });
+        return { avatars: Object.fromEntries(upstream.avatars.map((a) => [a.botId, { idle: a.idle, working: a.working }])) };
+      } catch {
+        // An older bots-sidebar without avatar markup: the tab falls back to initials.
+        return { avatars: {} };
+      }
+    },
     async botsList(): Promise<BotsListResult> {
       try {
         const upstream = await bb.sdk.plugins.callRpc({
