@@ -441,3 +441,6 @@
 @media (prefers-reduced-motion: reduce) {
   .cs-bot-character .bot-avatar, .cs-bot-character .bot-eyes, .cs-bot-character .bot-work-ring { animation: none !important; }
 }
+
+button.cs-needs-you-count { cursor: pointer; }
+button.cs-needs-you-count:hover { filter: brightness(1.15); }

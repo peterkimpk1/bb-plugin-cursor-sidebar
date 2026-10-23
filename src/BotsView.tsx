@@ -22,6 +22,7 @@ import type { ProjectSectionData } from "./forest";
 import type { BotSummary, cursorSidebarRpcContract } from "./server";
 import { useBotAvatars, type BotAvatarMarkup, type BotsState } from "./useBots";
 import {
+  needsYou,
   avatarInk,
   botFacts,
   botInitial,
@@ -228,7 +229,10 @@ function BotRow({
   );
   const count = facts.members.length;
   const disclosureLabel = `${open ? "Collapse" : "Expand"} ${bot.name}`;
-  const needsLabel = `${facts.needsYou} conversation${facts.needsYou === 1 ? "" : "s"} need${facts.needsYou === 1 ? "s" : ""} you`;
+  // The count includes children at any depth, so the badge itself opens the
+  // conversation that is waiting, and its tooltip names every one.
+  const waiting = facts.members.filter(needsYou);
+  const needsLabel = `${facts.needsYou} conversation${facts.needsYou === 1 ? "" : "s"} need${facts.needsYou === 1 ? "s" : ""} you: ${waiting.map((thread) => thread.title || "Untitled").join(", ")}. Click to open${waiting.length > 1 ? " the first" : ""}.`;
   const openBot = () => {
     if (target !== null) onOpen(target);
     else onNewConversation();
@@ -294,9 +298,19 @@ function BotRow({
             ) : null}
           </button>
           {facts.needsYou > 0 ? (
-            <span className="cs-needs-you-count" role="img" aria-label={needsLabel} title={needsLabel}>
+            <button
+              type="button"
+              className="cs-needs-you-count"
+              aria-label={needsLabel}
+              title={needsLabel}
+              onClick={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                if (waiting[0]) onOpen(waiting[0].id);
+              }}
+            >
               {facts.needsYou}
-            </span>
+            </button>
           ) : null}
           <button
             type="button"
