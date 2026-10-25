@@ -87,6 +87,9 @@ test("Bots tab labels desk models, edits one bot's desk, and replaces several in
   let dialog = await screen.findByRole("dialog", { name: "Desk model for Chief" });
   expect(within(dialog).getByText("3 live threads move", { exact: false })).toBeTruthy();
   expect(within(dialog).getByTestId("bb-provider-model-picker").getAttribute("data-routing-id")).toBe("laptop");
+  // Chief is on a temporary model: the dialog keeps it temporary, ending when it does.
+  expect((within(dialog).getByRole("checkbox", { name: "Temporary desk model" }) as HTMLInputElement).checked).toBe(true);
+  expect(Date.parse((dialog.querySelector("input[type=datetime-local]") as HTMLInputElement).value)).toBe(Math.floor(Date.parse(until) / 60_000) * 60_000);
   fireEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
   expect(replaceCalls).toEqual([]);

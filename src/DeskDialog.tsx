@@ -13,12 +13,17 @@ import type { BotSummary, DeskModel, DeskStatus, cursorSidebarRpcContract } from
 const FALLBACK_DESK: DeskModel = { providerId: "codex", model: "gpt-6.1-sol", reasoningLevel: "high" };
 const REASONING_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
 
-/** A datetime-local value three days out, the usual length of a quota pause. */
+/** A time as a datetime-local value, in the browser's zone. */
+function localInput(time: number): string {
+  const date = new Date(time);
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+/** Three days out on the hour, the usual length of a quota pause. */
 function defaultUntil(): string {
   const date = new Date(Date.now() + 3 * 24 * 60 * 60 * 1000);
   date.setMinutes(0, 0, 0);
-  const pad = (value: number) => String(value).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:00`;
+  return localInput(date.getTime());
 }
 
 /**
@@ -47,8 +52,15 @@ export function DeskDialog({
     const current = statuses.get(first.id)?.effective ?? configuredDesk(first).model ?? FALLBACK_DESK;
     return { providerId: current.providerId, model: current.model, reasoningLevel: current.reasoningLevel, ...(current.serviceTier ? { serviceTier: current.serviceTier } : {}) };
   });
-  const [temporary, setTemporary] = useState(false);
-  const [until, setUntil] = useState(defaultUntil);
+  // A bot on a temporary model opens on that override, so confirming without
+  // changes keeps it temporary instead of making it the bot's desk model.
+  const [activeUntil] = useState(() => {
+    const override = statuses.get(first.id)?.deskOverride ?? first.settings?.deskOverride ?? null;
+    const end = override ? Date.parse(override.until) : NaN;
+    return end > Date.now() ? end : null;
+  });
+  const [temporary, setTemporary] = useState(activeUntil !== null);
+  const [until, setUntil] = useState(() => (activeUntil !== null ? localInput(activeUntil) : defaultUntil()));
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const single = bots.length === 1;
@@ -102,7 +114,7 @@ export function DeskDialog({
               <DeskModelPicker value={value} onChange={setValue} routing={routing} disabled={busy} />
             </div>
             <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={temporary} disabled={busy} onChange={(event) => setTemporary(event.target.checked)} />
+              <input type="checkbox" aria-label="Temporary desk model" checked={temporary} disabled={busy} onChange={(event) => setTemporary(event.target.checked)} />
               Temporary until
               <input
                 type="datetime-local"
