@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRealtimeConnectionState, useRpc } from "@get-bb/plugin-sdk/app";
-import type { BotsListResult, cursorSidebarRpcContract } from "./server";
+import type { BotsListResult, DeskStatus, cursorSidebarRpcContract } from "./server";
 
 /** bots-sidebar publishes on its own channel, which another plugin cannot hear, so the list polls while the window is visible (the Bots tab badge reads it too). */
 const POLL_MS = 15_000;
@@ -107,4 +107,33 @@ export function useBotAvatars(appearanceKey: string, size: number): BotAvatarMar
     return () => { cancelled = true; };
   }, [rpc, appearanceKey, size]);
   return avatars;
+}
+
+/** Desk status reads every desk's context size, so it polls slower than the bot list. */
+const DESK_POLL_MS = 60_000;
+
+/**
+ * What each bot's desk runs now, from bots-sidebar's desk_status. Empty when
+ * bots-sidebar predates desks; rows then label the saved desk model instead.
+ */
+export function useDeskStatus(enabled: boolean): { statuses: ReadonlyMap<string, DeskStatus>; refresh: () => Promise<void> } {
+  const rpc = useRpc<typeof cursorSidebarRpcContract>();
+  const [statuses, setStatuses] = useState<ReadonlyMap<string, DeskStatus>>(new Map());
+  const refresh = useCallback(async () => {
+    try {
+      const result = await rpc.call("botsDeskStatus", {});
+      if (result.available) setStatuses(new Map(result.bots.map((bot) => [bot.botId, bot])));
+    } catch {
+      // Keep the last good statuses; labels fall back to saved settings.
+    }
+  }, [rpc]);
+  useEffect(() => {
+    if (!enabled) return;
+    void refresh();
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refresh();
+    }, DESK_POLL_MS);
+    return () => window.clearInterval(timer);
+  }, [enabled, refresh]);
+  return useMemo(() => ({ statuses, refresh }), [refresh, statuses]);
 }

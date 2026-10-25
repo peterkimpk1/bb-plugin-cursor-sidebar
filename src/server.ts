@@ -112,6 +112,16 @@ const botLaunchPresetSchema = z
   .optional()
   .catch(null);
 
+/** A bot's desk model as bots-sidebar stores it in settings.json. */
+const deskModelSchema = z.object({
+  providerId: z.string().min(1),
+  model: z.string().min(1),
+  reasoningLevel: z.string().min(1),
+  serviceTier: z.string().min(1).optional(),
+});
+export type DeskModel = z.infer<typeof deskModelSchema>;
+const deskOverrideSchema = deskModelSchema.extend({ until: z.string().min(1) });
+
 const botSchema = z.object({
   id: z.string().min(1),
   name: z.string(),
@@ -132,8 +142,41 @@ const botSchema = z.object({
   linkedProjectIds: z.array(z.string()).optional().catch(undefined),
   legacyHomeProjectId: z.string().nullable().optional().catch(null),
   launchPreset: botLaunchPresetSchema,
+  // Only the desk keys of the bot's private settings reach this plugin.
+  settings: z
+    .object({
+      desk: deskModelSchema.nullable().optional().catch(null),
+      deskOverride: deskOverrideSchema.nullable().optional().catch(null),
+    })
+    .optional()
+    .catch(undefined),
 });
 export type BotSummary = z.infer<typeof botSchema>;
+
+const deskStatusSchema = z.object({
+  botId: z.string().min(1),
+  deskId: z.string().nullable(),
+  providerId: z.string().nullable(),
+  model: z.string().nullable(),
+  contextTokens: z.number().nullable().catch(null),
+  liveChildren: z.number().int().nonnegative().catch(0),
+  desk: deskModelSchema.nullable().catch(null),
+  deskOverride: deskOverrideSchema.nullable().catch(null),
+  effective: deskModelSchema.nullable().catch(null),
+});
+export type DeskStatus = z.infer<typeof deskStatusSchema>;
+
+const deskReplaceResultSchema = z.object({
+  botId: z.string().min(1),
+  oldDeskId: z.string().nullable(),
+  newDeskId: z.string().nullable(),
+  moved: z.array(z.string()),
+  automationsRetargeted: z.array(z.string()),
+  automationsPending: z.array(z.string()).optional(),
+  skipped: z.string().optional(),
+  error: z.string().optional(),
+});
+export type DeskReplaceResult = z.infer<typeof deskReplaceResultSchema>;
 
 const botBindingSchema = z.object({ threadId: z.string().min(1), botId: z.string().min(1) });
 const botProjectOwnerSchema = z.object({ projectId: z.string().min(1), botId: z.string().min(1) });
@@ -175,6 +218,19 @@ export const cursorSidebarRpcContract = defineRpcContract({
       request: z.record(z.string(), z.json()),
     }),
     output: z.object({ threadId: z.string() }),
+  },
+  botsDeskStatus: {
+    input: z.object({}),
+    output: z.object({ available: z.boolean(), bots: z.array(deskStatusSchema) }),
+  },
+  botsDeskReplace: {
+    // bots-sidebar validates the request and replaces the desks one bot at a time.
+    input: z.object({
+      botIds: z.array(z.string().min(1)).min(1).max(20),
+      desk: deskModelSchema.nullable().optional(),
+      until: z.string().min(1).nullable().optional(),
+    }),
+    output: z.object({ results: z.array(deskReplaceResultSchema) }),
   },
   listWorkspaces: {
     input: z.object({ environmentIds: z.array(z.string().min(1)).max(100) }),
@@ -459,6 +515,28 @@ export default function plugin(bb: BbPluginApi) {
         method: "conversation_create",
         input: { botId, request },
         outputSchema: z.object({ threadId: z.string().min(1) }),
+      });
+    },
+    async botsDeskStatus() {
+      try {
+        const upstream = await bb.sdk.plugins.callRpc({
+          pluginId: BOTS_PLUGIN_ID,
+          method: "desk_status",
+          input: null,
+          outputSchema: z.object({ bots: z.array(deskStatusSchema) }),
+        });
+        return { available: true, bots: upstream.bots };
+      } catch {
+        // An older bots-sidebar without desks: rows fall back to their saved desk settings.
+        return { available: false, bots: [] };
+      }
+    },
+    async botsDeskReplace(input) {
+      return bb.sdk.plugins.callRpc({
+        pluginId: BOTS_PLUGIN_ID,
+        method: "desk_replace",
+        input,
+        outputSchema: z.object({ results: z.array(deskReplaceResultSchema) }),
       });
     },
     async listWorkspaces({ environmentIds }) {

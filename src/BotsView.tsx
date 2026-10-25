@@ -20,7 +20,9 @@ import { CONVERSATION_PAGE_SIZE, DEFAULT_INACTIVE_CONVERSATIONS, planConversatio
 import type { PersistentIds } from "./collapse";
 import type { ProjectSectionData } from "./forest";
 import type { BotSummary, cursorSidebarRpcContract } from "./server";
-import { useBotAvatars, type BotAvatarMarkup, type BotsState } from "./useBots";
+import { useBotAvatars, useDeskStatus, type BotAvatarMarkup, type BotsState } from "./useBots";
+import { DeskDialog } from "./DeskDialog";
+import { deskLabel } from "./desk";
 import {
   needsYou,
   avatarInk,
@@ -77,6 +79,10 @@ export function BotsView({
   const [composing, setComposing] = useState<BotSummary | null>(null);
   const appearanceKey = bots.status === "ready" ? JSON.stringify(bots.bots.map((bot) => [bot.id, bot.avatar])) : "";
   const avatars = useBotAvatars(appearanceKey, AVATAR_SIZE);
+  const desks = useDeskStatus(bots.status === "ready");
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const [deskDialog, setDeskDialog] = useState<{ botIds: readonly string[]; switchModel: boolean } | null>(null);
 
   if (bots.status === "loading") {
     return (
@@ -97,14 +103,62 @@ export function BotsView({
     return <BotsEmpty title="No bots yet" detail="Bots you create in Bots Sidebar show up here." />;
   }
 
+  // Live children of the desk move with it; desk_status counts hidden ones too.
+  const liveThreads = (bot: BotSummary): number | null => {
+    const status = desks.statuses.get(bot.id);
+    if (status) return status.liveChildren;
+    const model = models.find((entry) => entry.bot.id === bot.id);
+    if (!model) return null;
+    const desk = botOpenTarget(bot, model.facts.members, model.section);
+    return desk === null ? 0 : model.facts.members.filter((thread) => thread.parentThreadId === desk).length;
+  };
+  const toggleSelected = (botId: string) =>
+    setSelected((current) => {
+      const next = new Set(current);
+      if (!next.delete(botId)) next.add(botId);
+      return next;
+    });
+  const allSelected = selected.size === models.length;
+  const finishSelecting = () => {
+    setSelecting(false);
+    setSelected(new Set());
+  };
+  const dialogBots = deskDialog === null ? [] : models.filter((model) => deskDialog.botIds.includes(model.bot.id)).map((model) => model.bot);
+
   const startConversation = (bot: BotSummary) => {
     // bots-sidebar answered this list, so its conversation_create is reachable;
     // the dialog falls back to the native composer if the call itself fails.
     setComposing(bot);
   };
 
+  const toolButton =
+    "rounded px-1.5 py-0.5 text-xs font-medium text-sidebar-foreground/73 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring max-md:min-h-9 pointer-coarse:min-h-9";
+  const barButton =
+    "flex-1 rounded-md px-2 py-1.5 text-xs font-medium text-sidebar-foreground/90 hover:bg-sidebar-accent focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring disabled:pointer-events-none disabled:opacity-50 max-md:min-h-9 pointer-coarse:min-h-9";
   return (
     <>
+      <div className="cs-bots-toolbar flex min-h-7 items-center gap-1 pb-1 pl-3 pr-1">
+        <span aria-live="polite" className="min-w-0 flex-1 truncate text-xs font-medium text-sidebar-foreground/73">
+          {selecting ? `${selected.size} selected` : ""}
+        </span>
+        {selecting ? (
+          <button
+            type="button"
+            className={toolButton}
+            onClick={() => setSelected(allSelected ? new Set() : new Set(models.map((model) => model.bot.id)))}
+          >
+            {allSelected ? "None" : "All"}
+          </button>
+        ) : null}
+        <button
+          type="button"
+          aria-pressed={selecting}
+          className={toolButton}
+          onClick={() => (selecting ? finishSelecting() : setSelecting(true))}
+        >
+          {selecting ? "Done" : "Select"}
+        </button>
+      </div>
       <AnimatedList as="div" className="flex flex-col gap-px">
         {models.map((model) => (
           <BotRow
@@ -118,10 +172,39 @@ export function BotsView({
               ctx.onNavigate();
             }}
             onNewConversation={() => startConversation(model.bot)}
+            onDeskModel={() => setDeskDialog({ botIds: [model.bot.id], switchModel: true })}
+            onReplaceDesk={() => setDeskDialog({ botIds: [model.bot.id], switchModel: false })}
+            desk={deskLabel(model.bot, desks.statuses.get(model.bot.id))}
+            selection={selecting ? { selected: selected.has(model.bot.id), toggle: () => toggleSelected(model.bot.id) } : null}
             avatar={avatars[model.bot.id] ?? null}
           />
         ))}
       </AnimatedList>
+      {selecting ? (
+        <div role="toolbar" aria-label="Desk actions for selected bots" className="cs-bots-actionbar sticky bottom-0 z-10 mt-2 flex gap-1 rounded-lg border border-sidebar-border bg-sidebar p-1 shadow-sm">
+          <button type="button" className={barButton} disabled={selected.size === 0} onClick={() => setDeskDialog({ botIds: [...selected], switchModel: false })}>
+            Replace desks
+          </button>
+          <button type="button" className={barButton} disabled={selected.size === 0} onClick={() => setDeskDialog({ botIds: [...selected], switchModel: true })}>
+            Switch model…
+          </button>
+        </div>
+      ) : null}
+      {deskDialog !== null && dialogBots.length > 0 ? (
+        <DeskDialog
+          bots={dialogBots}
+          statuses={desks.statuses}
+          liveThreads={liveThreads}
+          switchModel={deskDialog.switchModel}
+          onClose={() => setDeskDialog(null)}
+          onDone={() => {
+            setDeskDialog(null);
+            finishSelecting();
+            onRefresh();
+            void desks.refresh();
+          }}
+        />
+      ) : null}
       {composing !== null ? (
         <BotConversationDialog
           bot={composing}
@@ -205,6 +288,10 @@ function BotRow({
   onToggle,
   onOpen,
   onNewConversation,
+  onDeskModel,
+  onReplaceDesk,
+  desk,
+  selection,
   avatar,
 }: {
   avatar: BotAvatarMarkup[string] | null;
@@ -214,6 +301,12 @@ function BotRow({
   onToggle: () => void;
   onOpen: (threadId: string) => void;
   onNewConversation: () => void;
+  onDeskModel: () => void;
+  onReplaceDesk: () => void;
+  /** Compact desk model label, e.g. "Sol · desk", and an override's end. */
+  desk: { label: string; until: string | null; title: string } | null;
+  /** Non-null in Select mode: the row toggles its checkbox instead of navigating. */
+  selection: { selected: boolean; toggle: () => void } | null;
 }) {
   const { bot, facts, section } = model;
   const target = botOpenTarget(bot, facts.members, section);
@@ -246,6 +339,8 @@ function BotRow({
           { label: target !== null ? "Open main conversation" : "Start a conversation", run: openBot },
           ...(count > 0 ? [{ label: open ? "Collapse conversations" : "Expand conversations", run: onToggle }] : []),
           { label: "New conversation", run: onNewConversation, separatorBefore: true },
+          { label: "Desk model…", run: onDeskModel, separatorBefore: true },
+          { label: "Replace desk…", run: onReplaceDesk },
         ]}
       >
         <div
@@ -259,6 +354,15 @@ function BotRow({
                 : "hover:bg-sidebar-accent/60",
           )}
         >
+          {selection ? (
+            <input
+              type="checkbox"
+              aria-label={`Select ${bot.name}`}
+              checked={selection.selected}
+              onChange={selection.toggle}
+              className="cs-bot-select size-3.5 shrink-0 accent-[var(--sidebar-primary,currentColor)] max-md:size-5 pointer-coarse:size-5"
+            />
+          ) : (
           <button
             type="button"
             aria-label={disclosureLabel}
@@ -282,19 +386,33 @@ function BotRow({
               )}
             />
           </button>
+          )}
           <BotAvatar bot={bot} working={facts.working} markup={avatar} />
           <button
             type="button"
-            title={target !== null ? `Open ${bot.name}` : `Start a conversation with ${bot.name}`}
-            aria-current={isActive ? "true" : undefined}
-            onClick={openBot}
+            title={selection ? `Select ${bot.name}` : target !== null ? `Open ${bot.name}` : `Start a conversation with ${bot.name}`}
+            aria-current={isActive && !selection ? "true" : undefined}
+            aria-pressed={selection ? selection.selected : undefined}
+            onClick={selection ? selection.toggle : openBot}
             className="flex min-h-7 min-w-0 flex-1 flex-col items-start justify-center rounded py-0.5 text-left focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring"
           >
-            <span className={cn("w-full truncate text-sm leading-5 text-sidebar-foreground/95", facts.unread && "font-medium")}>
-              {bot.name}
+            <span className="flex w-full min-w-0 items-baseline gap-2">
+              <span className={cn("min-w-0 flex-1 truncate text-sm leading-5 text-sidebar-foreground/95", facts.unread && "font-medium")}>
+                {bot.name}
+              </span>
+              {desk ? (
+                <span title={desk.title} className="cs-bot-desk shrink-0 whitespace-nowrap text-2xs leading-none tabular-nums text-sidebar-foreground/73">
+                  {desk.label}
+                </span>
+              ) : null}
             </span>
-            {bot.role.trim() ? (
-              <span className="w-full truncate text-2xs leading-none text-sidebar-foreground/73">{bot.role}</span>
+            {bot.role.trim() || desk?.until ? (
+              <span className="flex w-full min-w-0 items-baseline gap-2 text-2xs leading-none text-sidebar-foreground/73">
+                <span className="min-w-0 flex-1 truncate">{bot.role}</span>
+                {desk?.until ? (
+                  <span title={desk.title} className="cs-bot-desk-until shrink-0 whitespace-nowrap tabular-nums">{desk.until}</span>
+                ) : null}
+              </span>
             ) : null}
           </button>
           {facts.needsYou > 0 ? (
@@ -312,6 +430,7 @@ function BotRow({
               {facts.needsYou}
             </button>
           ) : null}
+          {selection ? null : (
           <button
             type="button"
             aria-label={`New conversation with ${bot.name}`}
@@ -329,6 +448,7 @@ function BotRow({
           >
             <Icon name="Plus" className="size-3.5 max-md:size-5 pointer-coarse:size-5" />
           </button>
+          )}
         </div>
       </SidebarActions>
       {/* Conversations hang under the bot: their status column lines up with the avatar. */}
