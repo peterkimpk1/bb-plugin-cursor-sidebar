@@ -103,9 +103,17 @@ bb plugin reload cursor-sidebar
 
 ```sh
 npm run typecheck          # tsc --noEmit
+npm test                   # in-process sidebar tab acceptance check
 npm run build              # bb plugin build writes dist/
 bb plugin reload cursor-sidebar
 ```
+
+The acceptance check mounts the registered Cursor Sidebar in jsdom with the
+SDK's frontend harness. It selects Projects through the view menu, then checks
+that pins, folders, selection, row order and expansion state survive Threads /
+Bots switches. Every fixture bot must retain its character SVG (including the
+working pose) while a remount's avatar request is pending, empty or rejected.
+It uses fixture RPC replies, with no running BB instance or browser.
 
 ## License
 
