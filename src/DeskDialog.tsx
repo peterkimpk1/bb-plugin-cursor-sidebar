@@ -54,10 +54,14 @@ export function DeskDialog({
   });
   // A bot on a temporary model opens on that override, so confirming without
   // changes keeps it temporary instead of making it the bot's desk model.
+  // With several bots, only an override they all share seeds the dialog.
   const [activeUntil] = useState(() => {
-    const override = statuses.get(first.id)?.deskOverride ?? first.settings?.deskOverride ?? null;
-    const end = override ? Date.parse(override.until) : NaN;
-    return end > Date.now() ? end : null;
+    const ends = bots.map((bot) => {
+      const override = statuses.get(bot.id)?.deskOverride ?? bot.settings?.deskOverride ?? null;
+      const end = override ? Date.parse(override.until) : NaN;
+      return end > Date.now() ? end : null;
+    });
+    return ends.every((end) => end !== null && end === ends[0]) ? ends[0]! : null;
   });
   const [temporary, setTemporary] = useState(activeUntil !== null);
   const [until, setUntil] = useState(() => (activeUntil !== null ? localInput(activeUntil) : defaultUntil()));
