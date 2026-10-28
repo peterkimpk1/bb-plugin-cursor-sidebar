@@ -104,9 +104,11 @@ import { Drawer } from "./Drawer";
 import { useShortcutGuide } from "./useShortcutGuide";
 import { ICON_BTN } from "./icon-btn";
 import { ShowMoreButton } from "./ShowMoreButton";
-import { SidebarTabSwitch, useSidebarTab } from "./SidebarTabs";
+import { ActiveFilterChip, SidebarTabSwitch, useActiveFilter, useSidebarTab } from "./SidebarTabs";
 import { useBots } from "./useBots";
-import { membersByBot } from "./bots";
+import { membersByBot, threadOwners } from "./bots";
+import { activeEntries } from "./active";
+import { ActiveView } from "./ActiveView";
 import { BotsView, useBotModels } from "./BotsView";
 
 
@@ -1008,6 +1010,59 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
     [ctx],
   );
 
+  // Active filter: one flat list over every visible thread at any depth, the
+  // same on both tabs. Rows there speak only for themselves, since each child
+  // that matters has a row of its own.
+  const [activeOn, setActiveOn] = useActiveFilter();
+  const active = useMemo(() => activeEntries(visible, now), [now, visible]);
+  const activeNeedsYou = useMemo(() => active.filter((entry) => entry.kind === "input").length, [active]);
+  const ownerByThread = useMemo(() => threadOwners(visible, botBindings ?? []), [botBindings, visible]);
+  const botNameById = useMemo(
+    () => new Map(bots.status === "ready" ? bots.bots.map((bot) => [bot.id, bot.name]) : []),
+    [bots],
+  );
+  const nativeProjectNameById = useMemo(
+    () => new Map(nativeProjects.map((project) => [project.id, project.isPersonal ? "Chats" : project.name])),
+    [nativeProjects],
+  );
+  const activeCtx = useMemo<TreeContext>(
+    () => ({
+      ...botsCtx,
+      descendantsById: new Map(),
+      statusOf: (threadId: string) => {
+        const thread = visibleById.get(threadId);
+        return thread === undefined ? undefined : worstThreadStatus([thread]);
+      },
+    }),
+    [botsCtx, visibleById],
+  );
+  const activeBotNameOf = useCallback(
+    (threadId: string) => {
+      const owner = ownerByThread.get(threadId);
+      return owner === undefined ? null : botNameById.get(owner) ?? null;
+    },
+    [botNameById, ownerByThread],
+  );
+  const activeParentTitleOf = useCallback(
+    (thread: PluginSidebarThread) => {
+      if (thread.parentThreadId === null) return null;
+      const parent = visibleById.get(thread.parentThreadId) ?? rawById.get(thread.parentThreadId);
+      return parent === undefined ? null : threadDisplayTitle(parent);
+    },
+    [rawById, visibleById],
+  );
+  const activeProjectNameOf = useCallback(
+    (thread: PluginSidebarThread) => {
+      const nativeId = rawById.get(thread.id)?.projectId;
+      return nativeId === undefined ? null : nativeProjectNameById.get(nativeId) ?? null;
+    },
+    [nativeProjectNameById, rawById],
+  );
+  const activePinnedOf = useCallback(
+    (threadId: string) => pinnedFamilyRoots.has(familyRootOfId(threadId)),
+    [familyRootOfId, pinnedFamilyRoots],
+  );
+
   const markAllRead = useCallback(async () => {
     if (unreadOrdinary.length === 0) return;
     setMarkReadBusy(true);
@@ -1258,6 +1313,14 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
         tab={tab}
         onChange={setTab}
         badges={{ bots: botsNeedingYou }}
+        accessory={
+          <ActiveFilterChip
+            on={activeOn}
+            onChange={setActiveOn}
+            count={active.length}
+            needsYou={activeNeedsYou}
+          />
+        }
       />
       {tab === "threads" ? <SidebarViewSyncNotice sync={sidebarView.sync} onRetry={sidebarView.retry} /> : null}
 
@@ -1313,7 +1376,18 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
               setIconPicker(null);
             }}
           />
-          {tab === "bots" ? (
+          {activeOn ? (
+            <div key="active" className="cs-grouping-swap" data-active-view="">
+              <ActiveView
+                entries={active}
+                ctx={activeCtx}
+                botNameOf={activeBotNameOf}
+                parentTitleOf={activeParentTitleOf}
+                projectNameOf={activeProjectNameOf}
+                pinnedOf={activePinnedOf}
+              />
+            </div>
+          ) : tab === "bots" ? (
             <div key="bots" className="cs-grouping-swap">
               <BotsView
                 bots={bots}

@@ -23,10 +23,14 @@ export function ThreadLeadStatus({
   exactStatus: ThreadStatusKind | undefined;
   label: string | null;
 }) {
+  // Attention outranks work, as in THREAD_STATUS_RANK: a parent that is still
+  // running must not hide a folded child that is waiting on you behind its spinner.
+  const attention = exactStatus === "input" || exactStatus === "failed";
   const working =
-    activityStatusKind(exactStatus) ||
-    isWorking(thread) ||
-    isActivityIndicator(thread.indicator);
+    !attention &&
+    (activityStatusKind(exactStatus) ||
+      isWorking(thread) ||
+      isActivityIndicator(thread.indicator));
   if (working) {
     // BB's default thread-row spinner size (size-4).
     return (

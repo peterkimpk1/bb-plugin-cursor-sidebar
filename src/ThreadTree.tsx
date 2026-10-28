@@ -54,6 +54,7 @@ import {
 import { ShowMoreButton } from "./ShowMoreButton";
 import { statusSourceForGroup, threadDisplayTitle } from "./inbox";
 import { resolveRowStatus, type ThreadStatusKind } from "./status";
+import { needsYou } from "./bots";
 
 /** Everything a row needs that is the same for every row in a section. */
 export interface TreeContext {
@@ -730,7 +731,7 @@ function labelsMatch(value: string | null, groupLabel: string | null): boolean {
   return value.trim().toLowerCase() === groupLabel.trim().toLowerCase();
 }
 
-function ThreadRow({
+export function ThreadRow({
   row,
   section,
   shelf,
@@ -741,6 +742,7 @@ function ThreadRow({
   environmentGroupLabel = null,
   activeRailLevels,
   activeElbow,
+  context = null,
 }: {
   row: ReturnType<typeof flattenShelf>[number];
   section: ProjectSectionData;
@@ -755,6 +757,11 @@ function ThreadRow({
   environmentGroupLabel?: string | null;
   activeRailLevels?: ReadonlySet<number> | undefined;
   activeElbow?: boolean;
+  /**
+   * A flat list's line under the title (owning bot, parent, project). It takes
+   * the place of the workspace line and of the detached-parent link above.
+   */
+  context?: string | null;
 }) {
   const actions = useSidebarThreadActions();
   const { splitProps, layout } = useSidebarThreadSplit(row.thread.id);
@@ -789,12 +796,16 @@ function ThreadRow({
   // so the row keeps branch (and any non-matching host) instead of repeating ARCH.
   const hideGroupedWorkspace = labelsMatch(workspace, environmentGroupLabel);
   const hideGroupedHost = labelsMatch(hostName, environmentGroupLabel);
-  const secondary = [
+  const secondary = context ?? [
     ctx.view.show.environment && !hideGroupedWorkspace ? workspace : null,
     ctx.view.show.branch ? branch : null,
     ctx.view.show.host && !hideGroupedHost ? location : null,
   ].filter(Boolean).join(" · ");
-  const secondaryTitle = [
+  const secondaryMobile = context ?? [
+    ctx.view.show.environment && !hideGroupedWorkspace ? workspace : null,
+    ctx.view.show.branch ? branch : null,
+  ].filter(Boolean).join(" · ");
+  const secondaryTitle = context ?? [
     ctx.view.show.environment && workspace !== null && !hideGroupedWorkspace ? workspacePath : null,
     ctx.view.show.branch ? branch : null,
     ctx.view.show.host && !hideGroupedHost ? location : null,
@@ -822,12 +833,23 @@ function ThreadRow({
   );
   const hasChildren = children.length > 0;
   const expanded = hasChildren && ctx.expandedParents.has(thread.id);
+  // The lead glyph already takes the strongest descendant's colour; while the
+  // children are folded, a count says how many of them are waiting on you.
+  const waitingBelow = hasChildren && !expanded
+    ? (ctx.descendantsById.get(thread.id) ?? []).filter(needsYou)
+    : [];
+  const waitingInput = waitingBelow.some((child) => child.hasPendingInteraction || child.indicator === "waiting-for-input");
+  const one = waitingBelow.length === 1;
+  const waitingLabel = `${waitingBelow.length} folded child thread${one ? "" : "s"} ${
+    waitingInput ? (one ? "needs you" : "need you") : one ? "has failed" : "have failed"
+  }`;
 
   const nativeParent =
     thread.parentThreadId === null
       ? undefined
       : ctx.visibleById.get(thread.parentThreadId);
   const detachedParent =
+    context === null &&
     depth === 0 &&
     nativeParent !== undefined &&
     !inShelf.has(nativeParent.id)
@@ -1095,7 +1117,7 @@ function ThreadRow({
               thread.isUnread && "font-medium",
             )}
           />
-          {secondary ? <span className="cs-thread-info mt-px block w-full overflow-hidden whitespace-nowrap text-2xs leading-none text-sidebar-foreground/73" title={secondaryTitle} aria-label={secondaryTitle}><span className="cs-secondary-desktop">{secondary}</span><span className="cs-secondary-mobile hidden">{[ctx.view.show.environment && !hideGroupedWorkspace ? workspace : null, ctx.view.show.branch ? branch : null].filter(Boolean).join(" · ")}</span></span> : null}
+          {secondary ? <span className="cs-thread-info mt-px block w-full overflow-hidden whitespace-nowrap text-2xs leading-none text-sidebar-foreground/73" title={secondaryTitle} aria-label={secondaryTitle}><span className="cs-secondary-desktop">{secondary}</span><span className="cs-secondary-mobile hidden">{secondaryMobile}</span></span> : null}
           </div>
 
           <div className="relative ml-auto flex min-w-6 shrink-0 items-center justify-end gap-1 pl-1">
@@ -1142,6 +1164,19 @@ function ThreadRow({
                   <Icon name="Archive" className="size-3.5" />
                 </button>
               </span>
+              {waitingBelow.length > 0 ? (
+                <span
+                  role="img"
+                  aria-label={waitingLabel}
+                  title={waitingLabel}
+                  className={cn(
+                    "cs-folded-attention pointer-events-none mr-0.5 transition-opacity duration-100 ease-out motion-reduce:transition-none group-hover/row:opacity-0 group-focus-within/row:opacity-0",
+                    waitingInput ? "cs-needs-you-count" : "cs-needs-you-count cs-failed-count",
+                  )}
+                >
+                  {waitingBelow.length}
+                </span>
+              ) : null}
               {hasChildren ? (
                 <span
                   className="pointer-events-none flex size-4 shrink-0 items-center justify-center text-sidebar-foreground/73 transition-opacity duration-100 ease-out motion-reduce:transition-none group-hover/row:opacity-0 group-focus-within/row:opacity-0"

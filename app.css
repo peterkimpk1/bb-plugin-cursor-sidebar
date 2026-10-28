@@ -406,6 +406,28 @@
   color: var(--warning-text, #d97706);
   background-color: color-mix(in oklab, var(--warning-text, #d97706) 16%, transparent);
 }
+/* Folded children that failed but none waiting: the same pill in the failure hue. */
+.cs-needs-you-count.cs-failed-count {
+  color: var(--destructive, #dc2626);
+  background-color: color-mix(in oklab, var(--destructive, #dc2626) 16%, transparent);
+}
+/* The Active chip's count when nothing is waiting: the needs-you pill's
+   geometry in the sidebar's quiet ink. */
+.cs-active-count {
+  display: inline-flex;
+  min-width: 16px;
+  height: 16px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 9999px;
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  color: color-mix(in oklab, var(--sidebar-foreground) 73%, transparent);
+  background-color: color-mix(in oklab, var(--sidebar-foreground) 8%, transparent);
+}
 
 /* A hairline ring keeps a pale avatar colour from dissolving into the sidebar. */
 [data-cursor-sidebar-root] .cs-bot-heading .cs-bot-avatar > span:first-child {
