@@ -56,13 +56,17 @@ export function activeEntries(threads: readonly PluginSidebarThread[], now: numb
   );
 }
 
-/** The row's context line: owning bot, parent thread, project; unknown parts drop out. */
+/**
+ * The row's context line: owning bot, project, parent thread; unknown parts
+ * drop out. The parent goes last because its title is the long one, so a
+ * narrow sidebar truncates it rather than the project.
+ */
 export function activeContext(parts: {
   botName: string | null;
   parentTitle: string | null;
   projectName: string | null;
 }): string {
-  return [parts.botName, parts.parentTitle === null ? null : `↳ ${parts.parentTitle}`, parts.projectName]
+  return [parts.botName, parts.projectName, parts.parentTitle === null ? null : `↳ ${parts.parentTitle}`]
     .filter((part): part is string => part !== null && part.trim().length > 0)
     .join(" · ");
 }

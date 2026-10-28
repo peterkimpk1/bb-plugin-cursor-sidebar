@@ -108,12 +108,12 @@ test("Active lists every thread that matters at any depth, flat, on both tabs, a
   expect(Array.from(panel().querySelectorAll("[data-active-kind]"), (node) => node.getAttribute("aria-label"))).toEqual([
     "Needs you", "Working", "Failed", "Recent",
   ]);
-  // Flat: no child toggles, no rails, and each row names its bot, parent and project.
+  // Flat: no child toggles, no rails, and each row names its bot, project and parent.
   expect(within(panel()).queryAllByRole("button", { name: /child thread/ })).toHaveLength(0);
   const info = (id: string) => row(id)!.querySelector(".cs-thread-info")?.getAttribute("aria-label");
-  expect(info("Asks a question")).toBe("Builder · ↳ Builder desk · NPI Manager");
-  expect(info("Deep worker")).toBe("Builder · ↳ Asks a question · NPI Manager");
-  expect(info("Broke unread")).toBe("↳ Plain root · NPI Manager");
+  expect(info("Asks a question")).toBe("Builder · NPI Manager · ↳ Builder desk");
+  expect(info("Deep worker")).toBe("Builder · NPI Manager · ↳ Asks a question");
+  expect(info("Broke unread")).toBe("NPI Manager · ↳ Plain root");
   expect(info("Touched an hour ago")).toBe("Chats");
   // A row speaks for itself here, and a raised hand outranks its own or its child's spinner.
   expect(within(row("Asks a question")!).getByRole("img", { name: "Thread needs user input" })).toBeTruthy();
