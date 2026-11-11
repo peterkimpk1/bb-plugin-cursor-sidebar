@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 
 export type SidebarTab = "threads" | "bots";
@@ -17,6 +18,8 @@ const TABS: readonly { id: SidebarTab; label: string }[] = [
 const TAB_KEY = "bb-plugin-cursor-sidebar:sidebar-tab:v1";
 /** The Active filter is a window preference too, stored the same way. */
 const ACTIVE_KEY = "bb-plugin-cursor-sidebar:active-filter:v1";
+/** So is whether the list shows the decision queue. */
+const DECISIONS_KEY = "bb-plugin-cursor-sidebar:decisions-view:v1";
 
 function useWindowPreference<T extends string>(
   key: string,
@@ -51,17 +54,61 @@ export function useSidebarTab(): [SidebarTab, (tab: SidebarTab) => void] {
 const parseOnOff = (value: string | null): "on" | "off" | null =>
   value === "on" || value === "off" ? value : null;
 
-export function useActiveFilter(): [boolean, (on: boolean) => void] {
-  const [value, setValue] = useWindowPreference(ACTIVE_KEY, parseOnOff, "off");
+function useOnOffPreference(key: string): [boolean, (on: boolean) => void] {
+  const [value, setValue] = useWindowPreference(key, parseOnOff, "off");
   const set = useCallback((on: boolean) => setValue(on ? "on" : "off"), [setValue]);
   return [value === "on", set];
 }
 
+export function useActiveFilter(): [boolean, (on: boolean) => void] {
+  return useOnOffPreference(ACTIVE_KEY);
+}
+
+export function useDecisionsView(): [boolean, (on: boolean) => void] {
+  return useOnOffPreference(DECISIONS_KEY);
+}
+
 /**
- * The Active chip beside the tab switch. Pressed, its face takes the same
- * raised surface the selected tab's thumb has, so the two read as one control
- * strip. The count turns to the needs-you tone while anything is waiting.
+ * A toggle chip beside the tab switch. Pressed, its face takes the same raised
+ * surface the selected tab's thumb has, so they read as one control strip.
  */
+function ViewChip({
+  on,
+  onChange,
+  label,
+  title,
+  children,
+}: {
+  on: boolean;
+  onChange: (on: boolean) => void;
+  label: string;
+  title: string;
+  children: ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      aria-pressed={on}
+      aria-label={label}
+      title={title}
+      onClick={() => onChange(!on)}
+      className="cs-active-chip group/chip flex shrink-0 rounded-md bg-sidebar-accent/50 p-0.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring"
+    >
+      <span
+        className={cn(
+          "flex min-h-6 items-center gap-1 rounded-[5px] px-2 text-xs font-medium transition-[background-color,color,box-shadow] duration-150 ease-out motion-reduce:transition-none max-md:min-h-9 pointer-coarse:min-h-9",
+          on
+            ? "bg-sidebar text-sidebar-foreground shadow-sm"
+            : "text-sidebar-foreground/73 group-hover/chip:text-sidebar-foreground/90",
+        )}
+      >
+        {children}
+      </span>
+    </button>
+  );
+}
+
+/** The Active chip. Its count turns to the needs-you tone while anything is waiting. */
 export function ActiveFilterChip({
   on,
   onChange,
@@ -75,31 +122,40 @@ export function ActiveFilterChip({
 }) {
   const label = `Active: ${count} thread${count === 1 ? "" : "s"}${needsYou > 0 ? `, ${needsYou} need${needsYou === 1 ? "s" : ""} you` : ""}`;
   return (
-    <button
-      type="button"
-      aria-pressed={on}
-      aria-label={label}
-      title={on ? "Show the full list" : "Show only active threads"}
-      onClick={() => onChange(!on)}
-      className="cs-active-chip group/chip flex shrink-0 rounded-md bg-sidebar-accent/50 p-0.5 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring"
-    >
-      <span
-        className={cn(
-          "flex min-h-6 items-center gap-1 rounded-[5px] px-2 text-xs font-medium transition-[background-color,color,box-shadow] duration-150 ease-out motion-reduce:transition-none max-md:min-h-9 pointer-coarse:min-h-9",
-          on
-            ? "bg-sidebar text-sidebar-foreground shadow-sm"
-            : "text-sidebar-foreground/73 group-hover/chip:text-sidebar-foreground/90",
-        )}
-      >
-        Active
-        <span
-          aria-hidden="true"
-          className={needsYou > 0 ? "cs-needs-you-count" : "cs-active-count"}
-        >
+    <ViewChip on={on} onChange={onChange} label={label} title={on ? "Show the full list" : "Show only active threads"}>
+      Active
+      <span aria-hidden="true" className={needsYou > 0 ? "cs-needs-you-count" : "cs-active-count"}>
+        {count}
+      </span>
+    </ViewChip>
+  );
+}
+
+/**
+ * Opsdesk's decision queue, as an inbox mark with the number waiting on you.
+ * An icon rather than a word keeps three controls on one row in a narrow sidebar.
+ */
+export function DecisionsChip({
+  on,
+  onChange,
+  count,
+  overdue,
+}: {
+  on: boolean;
+  onChange: (on: boolean) => void;
+  count: number;
+  overdue: number;
+}) {
+  const label = `Decisions: ${count === 0 ? "nothing" : count} waiting on you${overdue > 0 ? `, ${overdue} overdue` : ""}`;
+  return (
+    <ViewChip on={on} onChange={onChange} label={label} title={on ? "Show the list" : label}>
+      <Icon name="Inbox" aria-hidden="true" className="size-3.5" />
+      {count > 0 ? (
+        <span aria-hidden="true" className="cs-needs-you-count">
           {count}
         </span>
-      </span>
-    </button>
+      ) : null}
+    </ViewChip>
   );
 }
 

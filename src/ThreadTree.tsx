@@ -43,6 +43,7 @@ import { PullRequestMark } from "./PullRequestMark";
 import { RowContextMenu } from "./RowContextMenu";
 import {
   ThreadAge,
+  WorkingFor,
   ThreadLeadStatus,
 } from "./StatusSlot";
 import { hasStatusGlyph } from "./StatusGlyph";
@@ -55,6 +56,9 @@ import { ShowMoreButton } from "./ShowMoreButton";
 import { statusSourceForGroup, threadDisplayTitle } from "./inbox";
 import { resolveRowStatus, type ThreadStatusKind } from "./status";
 import { needsYou } from "./bots";
+import { isRunningTurn, modelLine } from "./thread-run";
+import { useThreadRun } from "./useThreadRuns";
+import { ProviderLogo } from "./ProviderLogo";
 
 /** Everything a row needs that is the same for every row in a section. */
 export interface TreeContext {
@@ -759,7 +763,7 @@ export function ThreadRow({
   activeElbow?: boolean;
   /**
    * A flat list's line under the title (owning bot, parent, project). It takes
-   * the place of the workspace line and of the detached-parent link above.
+   * the place of the workspace and machine after the model.
    */
   context?: string | null;
 }) {
@@ -783,33 +787,33 @@ export function ThreadRow({
     ? workspacePath.split(/[\\/]/).filter(Boolean).at(-1)?.trim() ?? null
     : null;
   const workspace = usableEnvironmentLabel(nameLabel) ?? usableEnvironmentLabel(pathLabel);
-  const branch = native.environment?.branchName?.trim() || null;
   const hostName = native.host?.name?.trim() || null;
-  // Name the machine when a thread has no workspace or branch (a personal chat,
-  // say). A remote host is named even when a branch exists, so a row never
-  // loses the machine it actually runs on.
+  // Name the machine when a thread has no workspace (a personal chat, say). A
+  // remote host is always named, so a row never loses the machine it runs on.
   const remoteHost =
     native.host && native.host.id !== ctx.primaryHostId ? `Host: ${native.host.name}` : null;
-  const location =
-    remoteHost ?? (workspace === null && branch === null && hostName ? `Host: ${hostName}` : null);
+  const location = remoteHost ?? (workspace === null && hostName ? `Host: ${hostName}` : null);
   // Under an Environment heading the group already names the host/workspace,
-  // so the row keeps branch (and any non-matching host) instead of repeating ARCH.
+  // so the row keeps any non-matching host instead of repeating ARCH.
   const hideGroupedWorkspace = labelsMatch(workspace, environmentGroupLabel);
   const hideGroupedHost = labelsMatch(hostName, environmentGroupLabel);
-  const secondary = context ?? [
-    ctx.view.show.environment && !hideGroupedWorkspace ? workspace : null,
-    ctx.view.show.branch ? branch : null,
-    ctx.view.show.host && !hideGroupedHost ? location : null,
-  ].filter(Boolean).join(" · ");
-  const secondaryMobile = context ?? [
-    ctx.view.show.environment && !hideGroupedWorkspace ? workspace : null,
-    ctx.view.show.branch ? branch : null,
-  ].filter(Boolean).join(" · ");
-  const secondaryTitle = context ?? [
-    ctx.view.show.environment && workspace !== null && !hideGroupedWorkspace ? workspacePath : null,
-    ctx.view.show.branch ? branch : null,
-    ctx.view.show.host && !hideGroupedHost ? location : null,
-  ].filter(Boolean).join(" · ");
+  // Line two leads with the model the thread last ran ("Opus 5.5 high"). While
+  // a turn runs, the age slot counts how long it has been going.
+  const running = isRunningTurn(thread);
+  const run = useThreadRun(thread, running);
+  const model = ctx.view.show.model ? modelLine(run) : null;
+  const logo = model === null ? null : <ProviderLogo providerId={thread.providerId} />;
+  const shownWorkspace = ctx.view.show.environment && !hideGroupedWorkspace ? workspace : null;
+  const shownLocation = ctx.view.show.host && !hideGroupedHost ? location : null;
+  const join = (parts: readonly (string | null)[]) => parts.filter(Boolean).join(" · ");
+  const secondaryText = context !== null ? join([model, context]) : join([model, shownWorkspace, shownLocation]);
+  // Hold the line open until the model arrives, so rows do not grow under the pointer.
+  const secondary = secondaryText || (ctx.view.show.model && run === undefined ? "\u00a0" : "");
+  const secondaryMobile = context !== null ? secondaryText : join([model, shownWorkspace]);
+  const secondaryTitle =
+    context !== null
+      ? secondaryText
+      : join([model, shownWorkspace === null ? null : workspacePath ?? shownWorkspace, shownLocation]);
   // The resting slot speaks for the whole subtree, so a collapsed parent still
   // shows a running or attention-seeking descendant instead of hiding it.
   const statusThread = statusSourceForGroup(
@@ -843,20 +847,6 @@ export function ThreadRow({
   const waitingLabel = `${waitingBelow.length} folded child thread${one ? "" : "s"} ${
     waitingInput ? (one ? "needs you" : "need you") : one ? "has failed" : "have failed"
   }`;
-
-  const nativeParent =
-    thread.parentThreadId === null
-      ? undefined
-      : ctx.visibleById.get(thread.parentThreadId);
-  const detachedParent =
-    context === null &&
-    depth === 0 &&
-    nativeParent !== undefined &&
-    !inShelf.has(nativeParent.id)
-      ? nativeParent
-      : null;
-
-
 
   const open = (
     event: Pick<
@@ -896,23 +886,6 @@ export function ThreadRow({
         ctx.draggingThreadId === thread.id && "opacity-50",
       )}
     >
-      {detachedParent !== null ? (
-        <button
-          type="button"
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            actions.open(detachedParent.id);
-            ctx.onNavigate();
-          }}
-          aria-label={`Parent thread: ${threadDisplayTitle(detachedParent)}`}
-          className="flex max-w-full items-center gap-1 truncate py-1 pl-6 pr-2 text-xs leading-none text-sidebar-foreground/73 hover:text-sidebar-foreground/90 max-md:min-h-9 pointer-coarse:min-h-9"
-        >
-          <Icon name="CornerDownRight" className="size-3 shrink-0" />
-          <span className="truncate">{threadDisplayTitle(detachedParent)}</span>
-        </button>
-      ) : null}
-
       <RowContextMenu
         thread={thread}
         onToggleChildren={hasChildren ? () => ctx.onToggleChildren(thread.id) : undefined}
@@ -1117,7 +1090,7 @@ export function ThreadRow({
               thread.isUnread && "font-medium",
             )}
           />
-          {secondary ? <span className="cs-thread-info mt-px block w-full overflow-hidden whitespace-nowrap text-2xs leading-none text-sidebar-foreground/73" title={secondaryTitle} aria-label={secondaryTitle}><span className="cs-secondary-desktop">{secondary}</span><span className="cs-secondary-mobile hidden">{secondaryMobile}</span></span> : null}
+          {secondary ? <span className="cs-thread-info mt-px block w-full overflow-hidden whitespace-nowrap text-2xs leading-none text-sidebar-foreground/73" title={secondaryTitle} aria-label={secondaryTitle}><span className="cs-secondary-desktop">{logo}{secondary}</span><span className="cs-secondary-mobile hidden">{logo}{secondaryMobile}</span></span> : null}
           </div>
 
           <div className="relative ml-auto flex min-w-6 shrink-0 items-center justify-end gap-1 pl-1">
@@ -1188,7 +1161,11 @@ export function ThreadRow({
               ) : null}
             </span>
             <span className="cs-thread-time pointer-events-none tabular-nums text-xs text-sidebar-foreground/73">
-              {ctx.view.show.updated ? <ThreadAge thread={statusThread} now={ctx.now} /> : null}
+              {running && run?.turnStartedAt != null ? (
+                <WorkingFor startedAt={run.turnStartedAt} now={ctx.now} />
+              ) : ctx.view.show.updated ? (
+                <ThreadAge thread={statusThread} now={ctx.now} />
+              ) : null}
             </span>
               </>
             )}

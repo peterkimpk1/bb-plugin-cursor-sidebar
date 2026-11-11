@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 import { Icon } from "@/components/ui/icon";
 import { isActivityIndicator } from "./StatusGlyph";
 import { relativeTimeLabel } from "./relative-time";
+import { workingForLabel } from "./thread-run";
 import type { ThreadStatusKind } from "./status";
 import { isWorking } from "./activity";
 
@@ -57,6 +58,19 @@ export function ThreadLeadStatus({
       aria-label={label ?? (thread.isUnread ? "Unread" : "Idle")}
       className={cn("size-2 shrink-0 rounded-full", tone)}
     />
+  );
+}
+
+/**
+ * How long the running turn has gone, in the age label's place. The working
+ * tone keeps it from reading as "updated 12m ago".
+ */
+export function WorkingFor({ startedAt, now }: { startedAt: number; now: number }) {
+  const label = workingForLabel(startedAt, now);
+  return (
+    <span className="cs-working-for tabular-nums text-xs font-medium text-success" aria-label={`Working for ${label}`}>
+      {label}
+    </span>
   );
 }
 

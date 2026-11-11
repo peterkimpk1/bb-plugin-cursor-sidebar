@@ -52,7 +52,7 @@ test("Threads → Bots → Threads preserves Peter's Cursor view and every bot's
   const registration = app.threadLists[0]!;
   let savedView: SidebarView = {
     ...DEFAULT_SIDEBAR_VIEW, groupBy: "status", sortConversationsBy: "status",
-    show: { updated: false, environment: false, branch: false, host: false, pr: false },
+    show: { updated: false, environment: false, model: false, host: false, pr: false },
   };
   let avatarReply = deferred<AvatarReply>();
   const rpc = {

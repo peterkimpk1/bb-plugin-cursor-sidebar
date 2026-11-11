@@ -401,7 +401,7 @@ export function SidebarViewMenuRoot({
               <DropdownMenu.SubContent {...scope} sideOffset={4} alignOffset={-4} className={CONTENT}>
                 <ToggleItem checked={view.show.updated} label="Updated time" icon="Clock" onToggle={(next) => onUpdate({ show: { ...view.show, updated: next } })} />
                 <ToggleItem checked={view.show.environment} label="Environment" icon="Cloud" onToggle={(next) => onUpdate({ show: { ...view.show, environment: next } })} />
-                <ToggleItem checked={view.show.branch} label="Branch" icon="GitBranch" onToggle={(next) => onUpdate({ show: { ...view.show, branch: next } })} />
+                <ToggleItem checked={view.show.model} label="Model" icon="Brain" onToggle={(next) => onUpdate({ show: { ...view.show, model: next } })} />
                 <ToggleItem checked={view.show.host} label="Machine" icon="Monitor" onToggle={(next) => onUpdate({ show: { ...view.show, host: next } })} />
                 <ToggleItem checked={view.show.pr} label="Pull request" icon="GitPullRequest" onToggle={(next) => onUpdate({ show: { ...view.show, pr: next } })} />
               </DropdownMenu.SubContent>

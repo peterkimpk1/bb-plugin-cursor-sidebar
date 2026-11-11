@@ -98,6 +98,21 @@
   display: block;
 }
 
+/* The provider's mark before a row's model name, filled with its tint. */
+.cs-provider-logo {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  margin-right: 4px;
+  vertical-align: -1px;
+  background-color: var(--cs-logo-dark, currentColor);
+}
+@supports (color: light-dark(#000, #fff)) {
+  .cs-provider-logo {
+    background-color: light-dark(var(--cs-logo-light, currentColor), var(--cs-logo-dark, currentColor));
+  }
+}
+
 /* Workspace/repo rows: title and subtitle sit as one tight pair. */
 .cs-workspace-row .cs-thread-title {
   line-height: 1.2;

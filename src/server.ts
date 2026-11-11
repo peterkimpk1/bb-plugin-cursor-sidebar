@@ -10,6 +10,8 @@ import { defineRpcContract, type BbPluginApi } from "@get-bb/plugin-sdk";
 import { z } from "zod";
 import { derivedProjectName, normalizeDirectoryPath } from "./project-name";
 import { coerceSidebarView } from "./sidebar-view";
+import { createThreadRunReader } from "./thread-runs-reader";
+import { answerResultSchema, createDecisionsBridge, decisionAnswerSchema, decisionsResultSchema } from "./decisions-bridge";
 
 const migrations = [
   // `snoozed_*` are kept only so an existing store migrates without a table
@@ -76,7 +78,9 @@ const sidebarViewSchema = z
     show: z.object({
       updated: z.boolean(),
       environment: z.boolean(),
-      branch: z.boolean(),
+      // Replaced the branch line. A stored view from before has no `model`
+      // key (its old `branch` key is dropped), and gets the line by default.
+      model: z.boolean().default(true),
       host: z.boolean(),
       pr: z.boolean(),
     }),
@@ -84,6 +88,26 @@ const sidebarViewSchema = z
   .strict();
 export type SidebarView = z.infer<typeof sidebarViewSchema>;
 export { sidebarViewSchema };
+
+const threadRunSchema = z.object({
+  threadId: z.string(),
+  /** The model id the latest turn ran on; null before a first turn. */
+  model: z.string().nullable(),
+  /** That model's short display name, e.g. "Opus 5.5" or "Sol 6.1". */
+  modelLabel: z.string().nullable(),
+  reasoningLevel: z.string().nullable(),
+  /** When the running turn started (epoch ms); null when not asked or unknown. */
+  turnStartedAt: z.number().nullable(),
+});
+export type ThreadRun = z.infer<typeof threadRunSchema>;
+export type {
+  DecisionAnswer,
+  DecisionDelivery,
+  DecisionProject,
+  DecisionRow,
+  DecisionsResult,
+  UndeliveredAnswer,
+} from "./decisions-bridge";
 
 /**
  * The Bots tab reads bots from the separate `bots-sidebar` plugin. A plugin's
@@ -352,6 +376,44 @@ export const cursorSidebarRpcContract = defineRpcContract({
       parentThreadId: z.string().nullable(),
     }),
   },
+  threadRuns: {
+    // A row's model line and running-turn timer; the sidebar feed has neither.
+    input: z.object({
+      threads: z
+        .array(
+          z.object({
+            threadId: z.string().trim().min(1),
+            providerId: z.string().trim().min(1),
+            working: z.boolean(),
+          }),
+        )
+        .max(500),
+    }),
+    output: z.object({ runs: z.array(threadRunSchema) }),
+  },
+  decisions: {
+    // Opsdesk's decision queue for every project with a Tasks project.
+    input: z.object({ fresh: z.boolean().optional() }),
+    output: decisionsResultSchema,
+  },
+  answerDecision: {
+    input: z.object({
+      projectId: z.string().trim().min(1),
+      taskId: z.string().trim().min(1),
+      answer: decisionAnswerSchema,
+    }),
+    output: answerResultSchema,
+  },
+  retryDecisionDelivery: {
+    // Send a recorded answer to its asking thread again.
+    input: z.object({ projectId: z.string().trim().min(1), taskId: z.string().trim().min(1) }),
+    output: answerResultSchema,
+  },
+  acknowledgeDecisionDelivery: {
+    // Leave an answer undelivered on purpose.
+    input: z.object({ projectId: z.string().trim().min(1), taskId: z.string().trim().min(1) }),
+    output: z.object({ ok: z.boolean(), error: z.string().nullable() }),
+  },
 });
 
 export const THREAD_ORDER_CHANNEL = "thread-order";
@@ -364,6 +426,8 @@ const inflightProjects = new Map<string, Promise<{ id: string; name: string }>>(
 export default function plugin(bb: BbPluginApi) {
   const db = bb.storage.database();
   bb.storage.migrate(db, migrations);
+  const readThreadRuns = createThreadRunReader(bb.sdk);
+  const decisions = createDecisionsBridge(bb.sdk);
 
   const readIcons = (): Array<{ projectId: string; icon: string }> =>
     (
@@ -671,6 +735,21 @@ export default function plugin(bb: BbPluginApi) {
     async setThreadParent({ threadId, parentThreadId }) {
       await bb.sdk.threads.update({ threadId, parentThreadId });
       return { threadId, parentThreadId };
+    },
+    async threadRuns({ threads }) {
+      return { runs: await readThreadRuns(threads) };
+    },
+    decisions({ fresh }) {
+      return decisions.list(fresh === true);
+    },
+    answerDecision(input) {
+      return decisions.answer(input);
+    },
+    retryDecisionDelivery(input) {
+      return decisions.retryDelivery(input);
+    },
+    acknowledgeDecisionDelivery(input) {
+      return decisions.acknowledgeDelivery(input);
     },
   });
 
