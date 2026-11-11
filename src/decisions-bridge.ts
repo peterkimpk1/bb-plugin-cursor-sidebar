@@ -35,7 +35,7 @@ export const undeliveredAnswerSchema = z.object({
   title: z.string(),
   /** The answer as recorded on the task; empty when not known yet. */
   answer: z.string().catch(""),
-  outcome: z.enum(["no-asker", "asker-gone", "failed", "interrupted"]).catch("failed"),
+  outcome: z.enum(["no-asker", "asker-gone", "failed", "not-sent", "interrupted"]).catch("failed"),
   threadId: z.string().nullable().catch(null),
   detail: z.string().nullable().catch(null),
 });

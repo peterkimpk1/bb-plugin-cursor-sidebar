@@ -274,7 +274,9 @@ function DecisionCard({
 const UNDELIVERED_REASON: Record<UndeliveredAnswer["outcome"], (threadId: string | null) => string> = {
   "no-asker": () => "Your answer is recorded, but the task names no asking thread, so nobody was told.",
   "asker-gone": (threadId) => `Your answer is recorded, but the asking thread${threadId ? ` ${threadId}` : ""} is archived.`,
-  failed: (threadId) => `Your answer is recorded, but sending it to ${threadId ?? "the asking thread"} failed.`,
+  failed: (threadId) =>
+    `Your answer is recorded, but sending it to ${threadId ?? "the asking thread"} hit an error. It may still have arrived; retrying can send it twice.`,
+  "not-sent": () => "Your answer is recorded, but Opsdesk could not confirm the task just before sending, so nothing was sent.",
   interrupted: () => "Your answer is recorded, but sending it was cut off. The thread may already have it; retrying can send it twice.",
 };
 

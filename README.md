@@ -66,11 +66,13 @@ Opsdesk, which comments your answer on the task, closes it, and sends the
 answer to the thread named on the task's `Asker:` line.
 
 If that thread was not told (the task names no asker, the asker is archived,
-or the send failed or was cut off), the card turns into **Not delivered**
-instead of disappearing. Your answer is already recorded. **Retry** asks
-Opsdesk to send it again; it never rewrites the answer, and it sends only while
-the answer still stands. **Let go** leaves it undelivered. These cards count
-toward the chip until one or the other.
+Opsdesk could not confirm the task just before sending, or the send hit an
+error or was cut off), the card turns into **Not delivered** instead of
+disappearing. Your answer is already recorded. **Retry** asks Opsdesk to send
+it again; it never rewrites the answer, and it sends only while the answer
+still stands. A send that hit an error or was cut off may still have arrived,
+so retrying one can send it twice; the card says so. **Let go** leaves it
+undelivered. These cards count toward the chip until one or the other.
 
 Decisions and Active each replace the list, so one turns the other off, and
 picking Threads or Bots returns to that tab. The queue refreshes every two

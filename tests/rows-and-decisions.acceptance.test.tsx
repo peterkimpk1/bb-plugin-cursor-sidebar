@@ -190,7 +190,7 @@ test("an answer the asking thread was not told stays as a Not delivered card unt
 
   // The approval is recorded, but the card does not vanish: it says the thread was not told.
   await within(panel).findByText("Not delivered");
-  expect(within(panel).getByText("Your answer is recorded, but sending it to thr_asker failed.")).toBeTruthy();
+  expect(within(panel).getByText("Your answer is recorded, but sending it to thr_asker hit an error. It may still have arrived; retrying can send it twice.")).toBeTruthy();
   await within(panel).findByText("1 not delivered");
   expect(screen.getByRole("button", { name: "Decisions: 1 waiting on you" })).toBeTruthy();
   expect(within(panel).queryByRole("button", { name: "Approve" })).toBeNull();
@@ -213,6 +213,7 @@ test("a missing or interrupted delivery from Opsdesk's list is shown, and lettin
   let undelivered: UndeliveredAnswer[] = [
     { taskId: "2463", key: "NM-2463", title: "Stop two orphaned dev servers?", answer: "**Peter approved.**", outcome: "no-asker", threadId: null, detail: null },
     { taskId: "2468", key: "NM-2468", title: "Accept the MW-3 design?", answer: "**Peter approved.**", outcome: "interrupted", threadId: "thr_x", detail: null },
+    { taskId: "2471", key: "NM-2471", title: "Run the backfill?", answer: "**Peter approved.**", outcome: "not-sent", threadId: "thr_y", detail: "Opsdesk could not re-read the task before sending, so nothing was sent: HTTP 503" },
   ];
   const acknowledged: unknown[] = [];
   const slot = await mount({
@@ -225,16 +226,18 @@ test("a missing or interrupted delivery from Opsdesk's list is shown, and lettin
     },
   }, [thread("Anything")]);
 
-  fireEvent.click(await screen.findByRole("button", { name: "Decisions: 2 waiting on you" }));
-  const panel = (await screen.findByText("2 not delivered")).closest("[role=tabpanel]") as HTMLElement;
+  fireEvent.click(await screen.findByRole("button", { name: "Decisions: 3 waiting on you" }));
+  const panel = (await screen.findByText("3 not delivered")).closest("[role=tabpanel]") as HTMLElement;
   expect(within(panel).getByText("Your answer is recorded, but the task names no asking thread, so nobody was told.")).toBeTruthy();
   expect(within(panel).getByText(/sending it was cut off\. The thread may already have it; retrying can send it twice\./)).toBeTruthy();
+  const notSent = within(panel).getByText("Your answer is recorded, but Opsdesk could not confirm the task just before sending, so nothing was sent.");
+  expect(notSent.getAttribute("title")).toMatch(/HTTP 503/);
 
   const card = within(panel).getByText("Stop two orphaned dev servers?").closest("li") as HTMLElement;
   await act(async () => { fireEvent.click(within(card).getByRole("button", { name: "Let go" })); });
   await waitFor(() => expect(within(panel).queryByText("Stop two orphaned dev servers?")).toBeNull());
   expect(acknowledged).toEqual([{ projectId: "npi", taskId: "2463" }]);
-  expect(within(panel).getByText("1 not delivered")).toBeTruthy();
+  expect(within(panel).getByText("2 not delivered")).toBeTruthy();
   slot.lifecycle.unmount();
 });
 

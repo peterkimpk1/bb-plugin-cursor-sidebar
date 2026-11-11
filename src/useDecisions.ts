@@ -30,7 +30,7 @@ export interface Decisions {
   acknowledgeDelivery: (projectId: string, taskId: string) => Promise<void>;
 }
 
-const OUTCOMES: readonly UndeliveredAnswer["outcome"][] = ["no-asker", "asker-gone", "failed", "interrupted"];
+const OUTCOMES: readonly UndeliveredAnswer["outcome"][] = ["no-asker", "asker-gone", "failed", "not-sent", "interrupted"];
 
 function toUndelivered(row: { taskId: string; key: string; title: string }, delivery: DecisionDelivery): UndeliveredAnswer {
   const outcome = OUTCOMES.find((candidate) => candidate === delivery.outcome) ?? "failed";
