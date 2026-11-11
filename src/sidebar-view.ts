@@ -58,7 +58,7 @@ export const DEFAULT_SIDEBAR_VIEW: SidebarView = {
   show: {
     updated: true,
     environment: true,
-    branch: true,
+    model: true,
     host: true,
     pr: true,
   },
@@ -192,7 +192,7 @@ export function coerceSidebarView(value: unknown): SidebarView {
     show: {
       updated: showFlag("updated"),
       environment: showFlag("environment"),
-      branch: showFlag("branch"),
+      model: showFlag("model"),
       host: showFlag("host"),
       pr: showFlag("pr"),
     },

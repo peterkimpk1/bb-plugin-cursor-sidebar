@@ -104,7 +104,9 @@ import { Drawer } from "./Drawer";
 import { useShortcutGuide } from "./useShortcutGuide";
 import { ICON_BTN } from "./icon-btn";
 import { ShowMoreButton } from "./ShowMoreButton";
-import { ActiveFilterChip, SidebarTabSwitch, useActiveFilter, useSidebarTab } from "./SidebarTabs";
+import { ActiveFilterChip, DecisionsChip, SidebarTabSwitch, useActiveFilter, useDecisionsView, useSidebarTab } from "./SidebarTabs";
+import { DecisionsView } from "./DecisionsView";
+import { useDecisions } from "./useDecisions";
 import { useBots } from "./useBots";
 import { membersByBot, threadOwners } from "./bots";
 import { activeEntries } from "./active";
@@ -1014,6 +1016,24 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
   // same on both tabs. Rows there speak only for themselves, since each child
   // that matters has a row of its own.
   const [activeOn, setActiveOn] = useActiveFilter();
+  // The decision queue replaces the list the way Active does; the two are
+  // never on together, and picking a tab goes back to that tab's list.
+  const decisions = useDecisions();
+  const [decisionsOn, setDecisionsOn] = useDecisionsView();
+  const showDecisions = useCallback(
+    (on: boolean) => {
+      setDecisionsOn(on);
+      if (on) setActiveOn(false);
+    },
+    [setActiveOn, setDecisionsOn],
+  );
+  const showActive = useCallback(
+    (on: boolean) => {
+      setActiveOn(on);
+      if (on) setDecisionsOn(false);
+    },
+    [setActiveOn, setDecisionsOn],
+  );
   const active = useMemo(() => activeEntries(visible, now), [now, visible]);
   const activeNeedsYou = useMemo(() => active.filter((entry) => entry.kind === "input").length, [active]);
   const ownerByThread = useMemo(() => threadOwners(visible, botBindings ?? []), [botBindings, visible]);
@@ -1311,15 +1331,28 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
     <div data-cursor-sidebar-root="" className="flex min-h-0 flex-1 flex-col">
       <SidebarTabSwitch
         tab={tab}
-        onChange={setTab}
+        onChange={(next) => {
+          setTab(next);
+          setDecisionsOn(false);
+        }}
         badges={{ bots: botsNeedingYou }}
         accessory={
-          <ActiveFilterChip
-            on={activeOn}
-            onChange={setActiveOn}
-            count={active.length}
-            needsYou={activeNeedsYou}
-          />
+          <>
+            <ActiveFilterChip
+              on={activeOn}
+              onChange={showActive}
+              count={active.length}
+              needsYou={activeNeedsYou}
+            />
+            {decisions.state.status === "ready" || decisionsOn ? (
+              <DecisionsChip
+                on={decisionsOn}
+                onChange={showDecisions}
+                count={decisions.count}
+                overdue={decisions.overdue}
+              />
+            ) : null}
+          </>
         }
       />
       {tab === "threads" ? <SidebarViewSyncNotice sync={sidebarView.sync} onRetry={sidebarView.retry} /> : null}
@@ -1376,7 +1409,11 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
               setIconPicker(null);
             }}
           />
-          {activeOn ? (
+          {decisionsOn ? (
+            <div key="decisions" className="cs-grouping-swap" data-decisions-view="">
+              <DecisionsView decisions={decisions} onNavigate={ctx.onNavigate} />
+            </div>
+          ) : activeOn ? (
             <div key="active" className="cs-grouping-swap" data-active-view="">
               <ActiveView
                 entries={active}

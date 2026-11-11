@@ -23,7 +23,7 @@ if your browser will not play the WebP.
 | **Chat order** | By last activity, or by status |
 | **Project order** | By hand, or by worst status and then by the project used most recently. Projects grouping only |
 | **Group order** | Most recent first, or the grouping's own default order |
-| **Show** | Updated time, environment, branch, machine and the pull request mark |
+| **Show** | Updated time, model, environment, machine and the pull request mark |
 | **Status filter** | Needs your input, Failed, Working, Unread, Idle |
 | **Environment filter** | Which environments appear, including chats with none |
 | **Expand All / Collapse All** | Every section and group at once |
@@ -34,6 +34,41 @@ Filters.
 
 The menu button shows a warning mark when a view change has not reached the
 server. The notice inside the menu has a Retry button.
+
+## Rows
+
+A row's second line names the model its thread last ran, after the provider's
+logo and with the reasoning level: `Opus 5.5 high`, `Sol 6.1 xhigh`. Codex
+names put the variant first so both providers read alike. Branch names are
+not shown.
+
+While a turn runs, the time on the right turns green and counts how long that
+turn has been going (`<1m`, `12m`, `1h 5m`). Idle rows keep their age.
+Background work left running after a turn ends does not count as a turn.
+
+The feed BB gives sidebars has neither fact, so the plugin's server reads them:
+the thread's resolved execution options, which BB takes from its latest turn,
+and the latest `turn/started` event of a working thread. Rows on screen ask in
+one batched call, and ask again only when their thread starts or ends a turn.
+
+## Decisions
+
+The inbox chip beside **Active** opens the decision queue from the
+[Opsdesk](https://github.com/peterkimpk1/bb-plugin-opsdesk) plugin: every open
+Tasks task labelled `decision` or `approval`, across every Opsdesk project,
+earliest due first. Its count is everything waiting on you.
+
+Each card shows the task key (it opens the task in Tasks), the due date or
+when the thread went ahead with the default, the question and the default
+pick. Click the question for the context and the task it blocks. **Accept
+default**, **Answer…**, **Approve** and **Decline…** go through
+Opsdesk, which comments your answer on the task and then closes it, so the
+waiting thread wakes to the answer.
+
+Decisions and Active each replace the list, so one turns the other off, and
+picking Threads or Bots returns to that tab. The queue refreshes every two
+minutes, when the window comes back into view, and when the list opens.
+Without Opsdesk the chip is hidden.
 
 ## Mobile
 

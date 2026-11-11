@@ -1,0 +1,158 @@
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { expect, test } from "vitest";
+import { loadPluginApp, renderSlot, type PluginRpcTestHandlers } from "@get-bb/plugin-sdk/testing/app";
+import type { PluginSidebarThread, PluginThreadListProps } from "@get-bb/plugin-sdk/app";
+import type { DecisionRow, DecisionsResult, ThreadRun, cursorSidebarRpcContract } from "../src/server";
+import { sidebarViewSchema } from "../src/server";
+import { DEFAULT_SIDEBAR_VIEW } from "../src/sidebar-view";
+
+const MINUTE = 60_000;
+
+function thread(id: string, overrides: Partial<PluginSidebarThread> = {}): PluginSidebarThread {
+  return {
+    id, title: id, titleFallback: null, projectId: "npi", parentThreadId: null,
+    sectionId: null, originKind: null, originPluginId: null, providerId: "codex",
+    hasPendingInteraction: false,
+    activity: { workflows: 0, backgroundAgents: 0, backgroundCommands: 0, planMode: 0, goals: 0 },
+    indicator: "none", indicatorLabel: null, isUnread: false, isPinned: false,
+    isArchived: false, environment: null, host: null,
+    createdAt: Date.now() - 60 * MINUTE, updatedAt: Date.now() - MINUTE, lastReadAt: null, latestAttentionAt: 0,
+    ...overrides,
+  };
+}
+
+function decision(taskId: string, overrides: Partial<DecisionRow> = {}): DecisionRow {
+  return {
+    taskId, key: `NM-${taskId}`, title: `Question ${taskId}?`, kind: "decision", summary: "Context for the question.",
+    defaultPick: "Take option 1.", dueDate: "2026-11-16", isOverdue: false, hasDefaulted: false, parentKey: null, parentTitle: null,
+    ...overrides,
+  };
+}
+
+const providers = [
+  { id: "codex", name: "Codex", logoUrl: "/api/v1/system/providers/codex/logo", available: true },
+  { id: "claude-code", name: "Claude Code", logoUrl: "/api/v1/system/providers/claude-code/logo", available: true, strings: { iconTint: { light: "#D97757", dark: "#D97757" } } },
+];
+
+function mount(rpc: Partial<PluginRpcTestHandlers<typeof cursorSidebarRpcContract>>, threads: PluginSidebarThread[]) {
+  const handlers = {
+    // Updated grouping puts today's rows on screen without opening a project.
+    sidebarView: () => ({ view: { ...DEFAULT_SIDEBAR_VIEW, groupBy: "updated" as const } }),
+    setSidebarView: ({ view }: { view: unknown }) => ({ view: sidebarViewSchema.parse(view) }),
+    botsList: () => ({ available: false, reason: "not installed", bots: [], threadBindings: [], personalProjectId: null, projectOwners: [] }),
+    primaryHost: () => ({ hostId: "mini" }),
+    listProjectIcons: () => ({ icons: [] }),
+    listWorkspaces: () => ({ workspaces: [] }),
+    listThreadSections: () => ({ sections: [] }),
+    listThreadOrders: () => ({ orders: [] }),
+    ...rpc,
+  } as PluginRpcTestHandlers<typeof cursorSidebarRpcContract>;
+  return loadPluginApp(() => import("../app")).then((app) =>
+    renderSlot<PluginThreadListProps, typeof cursorSidebarRpcContract>(app.threadLists[0]!, {
+      activeThreadId: null, activeProjectId: "npi", isCompactViewport: false, searchQuery: "", onNavigate: () => {},
+      Original: () => null,
+    }, {
+      rpc: handlers,
+      sidebarThreads: { projects: [{ id: "npi", name: "NPI Manager", isPersonal: false }], threads },
+      providers: { status: "ready", providers: providers as never },
+    }),
+  );
+}
+
+test("rows name the model a thread runs on and how long a working turn has gone, never its branch", async () => {
+  const started = Date.now() - (14 * 60 + 30) * MINUTE;
+  const runs: Record<string, Omit<ThreadRun, "threadId">> = {
+    "Desk": { model: "gpt-6.1-sol", modelLabel: "Sol 6.1", reasoningLevel: "high", turnStartedAt: null },
+    "Worker": { model: "claude-opus-5-5", modelLabel: "Opus 5.5", reasoningLevel: "xhigh", turnStartedAt: started },
+  };
+  const slot = await mount({
+    threadRuns: ({ threads }) => ({ runs: threads.map(({ threadId }) => ({ threadId, ...runs[threadId]! })) }),
+  }, [
+    thread("Desk", { environment: { id: "env", name: null, branchName: "bb/desk-branch-thr_123", workspaceDisplayKind: "other" } }),
+    thread("Worker", { providerId: "claude-code", indicator: "runtime", indicatorLabel: "Thread is working" }),
+  ]);
+
+  const lines = () => Array.from(document.querySelectorAll(".cs-secondary-desktop"), (line) => line.textContent);
+  await waitFor(() => expect(lines()).toEqual(expect.arrayContaining(["Sol 6.1 high", "Opus 5.5 xhigh"])));
+  // The working row trades its age for the turn's running time.
+  expect(screen.getByLabelText("Working for 14h").textContent).toBe("14h");
+  expect(document.body.textContent).not.toContain("bb/desk-branch");
+  // Each model line starts with its provider's mark, in the provider's tint.
+  const workerLogo = document.querySelector<HTMLElement>('.cs-secondary-desktop [data-provider-logo="claude-code"]');
+  expect(workerLogo?.style.getPropertyValue("--cs-logo-dark")).toBe("#D97757");
+  expect(document.querySelector('.cs-secondary-desktop [data-provider-logo="codex"]')).not.toBeNull();
+  // One batched read; only the working thread asks for its turn start.
+  const calls = slot.inspection.rpcCalls.filter(({ method }) => method === "threadRuns");
+  expect(calls).toHaveLength(1);
+  expect(calls[0]!.input).toEqual({
+    threads: expect.arrayContaining([
+      { threadId: "Desk", providerId: "codex", working: false },
+      { threadId: "Worker", providerId: "claude-code", working: true },
+    ]),
+  });
+  slot.lifecycle.unmount();
+});
+
+test("the Decisions chip opens Opsdesk's queue in the sidebar and answers through it", async () => {
+  let rows = [
+    decision("916", { isOverdue: true, hasDefaulted: true, dueDate: "2026-09-16" }),
+    decision("2416", { kind: "approval", defaultPick: null, title: "Send one demo reset test?" }),
+    decision("2426", { dueDate: "2026-11-17", title: "Apply payments to native orders only?" }),
+  ];
+  const answers: unknown[] = [];
+  let readError: string | null = null;
+  const queue = (): DecisionsResult => ({
+    available: true, reason: null,
+    projects: [{ projectId: "npi", name: "npi-manager", error: readError, rows: readError === null ? rows : [] }],
+  });
+  const slot = await mount({
+    threadRuns: ({ threads }) => ({ runs: threads.map(({ threadId }) => ({ threadId, model: null, modelLabel: null, reasoningLevel: null, turnStartedAt: null })) }),
+    decisions: () => queue(),
+    answerDecision: (input) => {
+      answers.push(input);
+      rows = rows.filter((row) => row.taskId !== input.taskId);
+      return { ok: true, error: null };
+    },
+  }, [thread("Anything")]);
+
+  // A decision that already went ahead with its default is not overdue.
+  const chip = await screen.findByRole("button", { name: "Decisions: 3 waiting on you" });
+  expect(chip.getAttribute("aria-pressed")).toBe("false");
+  fireEvent.click(chip);
+  expect(chip.getAttribute("aria-pressed")).toBe("true");
+  const list = await screen.findByText("3 waiting · 1 approval · 1 defaulted");
+  const panel = list.closest("[role=tabpanel]") as HTMLElement;
+  expect(within(panel).getByText("Defaulted Sep 16")).toBeTruthy();
+  expect(within(panel).getByRole("link", { name: "NM-916" }).getAttribute("href")).toBe("/plugins/tasks/tasks/task/NM-916");
+
+  // A read Tasks rejects keeps the cards and the count instead of emptying them.
+  readError = "task-list data changed after this cursor was issued";
+  fireEvent.click(within(panel).getByRole("button", { name: "Refresh decisions" }));
+  await within(panel).findByText("Couldn’t read npi-manager just now; showing the last list. It retries on its own.");
+  expect(within(panel).getByText("Question 916?")).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Decisions: 3 waiting on you" })).toBeTruthy();
+  readError = null;
+
+  // The defaulted decision offers Dismiss in place of Accept default; the
+  // decision still waiting keeps Accept default.
+  expect(within(panel).getAllByRole("button", { name: "Accept default" })).toHaveLength(1);
+  fireEvent.click(within(panel).getByRole("button", { name: "Dismiss" }));
+  await waitFor(() => expect(within(panel).queryByText("Question 916?")).toBeNull());
+  fireEvent.click(within(panel).getByRole("button", { name: "Accept default" }));
+  await waitFor(() => expect(within(panel).queryByText("Apply payments to native orders only?")).toBeNull());
+  expect(answers).toEqual([
+    { projectId: "npi", taskId: "916", answer: { kind: "dismiss" } },
+    { projectId: "npi", taskId: "2426", answer: { kind: "accept-default" } },
+  ]);
+
+  fireEvent.click(within(panel).getByRole("button", { name: "Decline…" }));
+  fireEvent.change(within(panel).getByRole("textbox"), { target: { value: "Not until SMTP is verified" } });
+  await act(async () => { fireEvent.click(within(panel).getByRole("button", { name: "Decline" })); });
+  await waitFor(() => expect(within(panel).getByText("Nothing is waiting on you")).toBeTruthy());
+  expect(answers.at(-1)).toEqual({ projectId: "npi", taskId: "2416", answer: { kind: "decline", note: "Not until SMTP is verified" } });
+
+  // Active and Decisions each replace the list, so turning one on turns the other off.
+  fireEvent.click(screen.getByRole("button", { name: /^Active:/ }));
+  expect(screen.getByRole("button", { name: /^Decisions:/ }).getAttribute("aria-pressed")).toBe("false");
+  slot.lifecycle.unmount();
+});
