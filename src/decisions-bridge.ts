@@ -1,6 +1,7 @@
 /**
  * Decisions come from the Opsdesk plugin: every open Tasks task with the
- * `decision` label, per Opsdesk project. A plugin's app can only call its own
+ * `decision` or `approval` label, per Opsdesk project, plus answers whose
+ * asking thread was not told. A plugin's app can only call its own
  * RPC, so this server forwards to Opsdesk's `listProjects`, `getDecisions` and
  * `answerDecision`. Opsdesk stays the owner of what a decision is and what an
  * answer writes; this file only gathers every project's queue into one list.
@@ -27,10 +28,34 @@ export const decisionRowSchema = z.object({
 });
 export type DecisionRow = z.infer<typeof decisionRowSchema>;
 
+/** An answered task whose asking thread was not told the answer. */
+export const undeliveredAnswerSchema = z.object({
+  taskId: z.string(),
+  key: z.string(),
+  title: z.string(),
+  /** The answer as recorded on the task; empty when not known yet. */
+  answer: z.string().catch(""),
+  outcome: z.enum(["no-asker", "asker-gone", "failed", "interrupted"]).catch("failed"),
+  threadId: z.string().nullable().catch(null),
+  detail: z.string().nullable().catch(null),
+});
+export type UndeliveredAnswer = z.infer<typeof undeliveredAnswerSchema>;
+
+/** What Opsdesk reports about telling the asker; null when nothing was recorded. */
+export const decisionDeliverySchema = z.object({
+  outcome: z.string(),
+  threadId: z.string().nullable().catch(null),
+  detail: z.string().nullable().catch(null),
+});
+export type DecisionDelivery = z.infer<typeof decisionDeliverySchema>;
+
+export { isSettledDelivery } from "./decision-delivery";
+
 const decisionProjectSchema = z.object({
   projectId: z.string(),
   name: z.string(),
   rows: z.array(decisionRowSchema),
+  undelivered: z.array(undeliveredAnswerSchema),
   /** Why this project's queue could not be read; null when it was. */
   error: z.string().nullable(),
 });
@@ -57,8 +82,17 @@ export type DecisionAnswer = z.infer<typeof decisionAnswerSchema>;
 const upstreamProjectsSchema = z.object({
   projects: z.array(z.object({ id: z.string(), name: z.string(), hasTasksProject: z.boolean() })),
 });
-const upstreamQueueSchema = z.object({ rows: z.array(decisionRowSchema) });
-const answerResultSchema = z.object({ ok: z.boolean(), error: z.string().nullable() });
+// An Opsdesk without delivery tracking sends no `undelivered` and no `delivery`.
+const upstreamQueueSchema = z.object({
+  rows: z.array(decisionRowSchema),
+  undelivered: z.array(undeliveredAnswerSchema).catch([]),
+});
+export const answerResultSchema = z.object({
+  ok: z.boolean(),
+  error: z.string().nullable(),
+  delivery: decisionDeliverySchema.nullable().catch(null),
+});
+const acknowledgeResultSchema = z.object({ ok: z.boolean(), error: z.string().nullable() });
 
 /** Every open window polls; one read serves them all for this long. */
 const SHARED_READ_MS = 45_000;
@@ -97,10 +131,10 @@ export function createDecisionsBridge(sdk: Sdk) {
                 input: { projectId: project.id },
                 outputSchema: upstreamQueueSchema,
               });
-              return { projectId: project.id, name: project.name, rows: queue.rows, error: null };
+              return { projectId: project.id, name: project.name, rows: queue.rows, undelivered: queue.undelivered, error: null };
             } catch (cause) {
               const pause = RETRY_PAUSES_MS[attempt];
-              if (pause === undefined) return { projectId: project.id, name: project.name, rows: [], error: describe(cause) };
+              if (pause === undefined) return { projectId: project.id, name: project.name, rows: [], undelivered: [], error: describe(cause) };
               await new Promise((resolve) => setTimeout(resolve, pause));
             }
           }
@@ -127,6 +161,26 @@ export function createDecisionsBridge(sdk: Sdk) {
         method: "answerDecision",
         input,
         outputSchema: answerResultSchema,
+      });
+      shared = null;
+      return result;
+    },
+    async retryDelivery(input: { projectId: string; taskId: string }) {
+      const result = await sdk.plugins.callRpc({
+        pluginId: OPSDESK_PLUGIN_ID,
+        method: "retryDecisionDelivery",
+        input,
+        outputSchema: answerResultSchema,
+      });
+      shared = null;
+      return result;
+    },
+    async acknowledgeDelivery(input: { projectId: string; taskId: string }) {
+      const result = await sdk.plugins.callRpc({
+        pluginId: OPSDESK_PLUGIN_ID,
+        method: "acknowledgeDecisionDelivery",
+        input,
+        outputSchema: acknowledgeResultSchema,
       });
       shared = null;
       return result;

@@ -62,8 +62,15 @@ Each card shows the task key (it opens the task in Tasks), the due date or
 when the thread went ahead with the default, the question and the default
 pick. Click the question for the context and the task it blocks. **Accept
 default**, **Answer…**, **Approve** and **Decline…** go through
-Opsdesk, which comments your answer on the task and then closes it, so the
-waiting thread wakes to the answer.
+Opsdesk, which comments your answer on the task, closes it, and sends the
+answer to the thread named on the task's `Asker:` line.
+
+If that thread was not told (the task names no asker, the asker is archived,
+or the send failed or was cut off), the card turns into **Not delivered**
+instead of disappearing. Your answer is already recorded. **Retry** asks
+Opsdesk to send it again; it never rewrites the answer, and it sends only while
+the answer still stands. **Let go** leaves it undelivered. These cards count
+toward the chip until one or the other.
 
 Decisions and Active each replace the list, so one turns the other off, and
 picking Threads or Bots returns to that tab. The queue refreshes every two

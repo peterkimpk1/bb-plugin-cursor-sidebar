@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRpc } from "@get-bb/plugin-sdk/app";
-import type { DecisionAnswer, DecisionProject, cursorSidebarRpcContract } from "./server";
+import type { DecisionAnswer, DecisionDelivery, DecisionProject, UndeliveredAnswer, cursorSidebarRpcContract } from "./server";
+import { isSettledDelivery } from "./decision-delivery";
 
 /** Opsdesk publishes on its own channel, which this plugin cannot hear, so the queue polls. */
 const POLL_MS = 2 * 60_000;
@@ -12,14 +13,28 @@ export type DecisionsState =
 
 export interface Decisions {
   state: DecisionsState;
-  /** Open decisions and approvals across every project. */
+  /** Open decisions and approvals, plus answers the asker was not told, across every project. */
   count: number;
   /** Past due and still waiting; a decision that went ahead with its default is not. */
   overdue: number;
   /** `fresh` skips the server's shared read, e.g. when the list opens. */
   refresh: (fresh?: boolean) => Promise<void>;
-  /** Records the answer through Opsdesk; throws its error so the card can show it. */
-  answer: (projectId: string, taskId: string, answer: DecisionAnswer) => Promise<void>;
+  /**
+   * Records the answer through Opsdesk; throws its error so the card can show
+   * it. Resolves with what Opsdesk reported about telling the asker.
+   */
+  answer: (projectId: string, taskId: string, answer: DecisionAnswer) => Promise<DecisionDelivery | null>;
+  /** Sends an undelivered answer again; throws Opsdesk's error. */
+  retryDelivery: (projectId: string, taskId: string) => Promise<DecisionDelivery | null>;
+  /** Leaves an answer undelivered on purpose; throws Opsdesk's error. */
+  acknowledgeDelivery: (projectId: string, taskId: string) => Promise<void>;
+}
+
+const OUTCOMES: readonly UndeliveredAnswer["outcome"][] = ["no-asker", "asker-gone", "failed", "interrupted"];
+
+function toUndelivered(row: { taskId: string; key: string; title: string }, delivery: DecisionDelivery): UndeliveredAnswer {
+  const outcome = OUTCOMES.find((candidate) => candidate === delivery.outcome) ?? "failed";
+  return { taskId: row.taskId, key: row.key, title: row.title, answer: "", outcome, threadId: delivery.threadId, detail: delivery.detail };
 }
 
 export function useDecisions(): Decisions {
@@ -42,7 +57,13 @@ export function useDecisions(): Decisions {
         setState((current) => {
           const previous = new Map(current.status === "ready" ? current.projects.map((project) => [project.projectId, project]) : []);
           const projects = result.projects.map((project) =>
-            project.error === null ? project : { ...project, rows: previous.get(project.projectId)?.rows ?? [] },
+            project.error === null
+              ? project
+              : {
+                  ...project,
+                  rows: previous.get(project.projectId)?.rows ?? [],
+                  undelivered: previous.get(project.projectId)?.undelivered ?? [],
+                },
           );
           return { status: "ready", projects };
         });
@@ -72,26 +93,72 @@ export function useDecisions(): Decisions {
     };
   }, [refresh]);
 
+  /** Applies a change to one project's cards until the next read confirms it. */
+  const patchProject = useCallback((projectId: string, patch: (project: DecisionProject) => DecisionProject) => {
+    generation.current++;
+    setState((current) =>
+      current.status !== "ready"
+        ? current
+        : { status: "ready", projects: current.projects.map((project) => (project.projectId === projectId ? patch(project) : project)) },
+    );
+  }, []);
+
   const answer = useCallback(
     async (projectId: string, taskId: string, decision: DecisionAnswer) => {
       const result = await rpc.call("answerDecision", { projectId, taskId, answer: decision });
       if (!result.ok) throw new Error(result.error ?? "Opsdesk did not record the answer.");
-      generation.current++;
-      setState((current) =>
-        current.status !== "ready"
-          ? current
-          : {
-              status: "ready",
-              projects: current.projects.map((project) =>
-                project.projectId === projectId ? { ...project, rows: project.rows.filter((row) => row.taskId !== taskId) } : project,
-              ),
-            },
-      );
+      const delivery = result.delivery;
+      // The answer is recorded either way. When the asker was not told, the
+      // card turns into a "not delivered" notice instead of disappearing.
+      patchProject(projectId, (project) => {
+        const row = project.rows.find((candidate) => candidate.taskId === taskId);
+        const rows = project.rows.filter((candidate) => candidate.taskId !== taskId);
+        if (row === undefined || delivery === null || isSettledDelivery(delivery)) return { ...project, rows };
+        const undelivered = [...project.undelivered.filter((u) => u.taskId !== taskId), toUndelivered(row, delivery)];
+        return { ...project, rows, undelivered };
+      });
+      void refresh(true);
+      return delivery;
+    },
+    [patchProject, refresh, rpc],
+  );
+
+  const retryDelivery = useCallback(
+    async (projectId: string, taskId: string) => {
+      const result = await rpc.call("retryDecisionDelivery", { projectId, taskId });
+      if (!result.ok) throw new Error(result.error ?? "Opsdesk did not send the answer.");
+      const delivery = result.delivery;
+      patchProject(projectId, (project) => ({
+        ...project,
+        undelivered: isSettledDelivery(delivery)
+          ? project.undelivered.filter((u) => u.taskId !== taskId)
+          : project.undelivered.map((u) => (u.taskId === taskId && delivery !== null ? { ...toUndelivered(u, delivery), answer: u.answer } : u)),
+      }));
+      void refresh(true);
+      return delivery;
+    },
+    [patchProject, refresh, rpc],
+  );
+
+  const acknowledgeDelivery = useCallback(
+    async (projectId: string, taskId: string) => {
+      const result = await rpc.call("acknowledgeDecisionDelivery", { projectId, taskId });
+      if (!result.ok) throw new Error(result.error ?? "Opsdesk did not update the answer.");
+      patchProject(projectId, (project) => ({ ...project, undelivered: project.undelivered.filter((u) => u.taskId !== taskId) }));
       void refresh(true);
     },
-    [refresh, rpc],
+    [patchProject, refresh, rpc],
   );
 
   const rows = useMemo(() => (state.status === "ready" ? state.projects.flatMap((project) => project.rows) : []), [state]);
-  return { state, count: rows.length, overdue: rows.filter((row) => row.isOverdue && !row.hasDefaulted).length, refresh, answer };
+  const undelivered = state.status === "ready" ? state.projects.reduce((sum, project) => sum + project.undelivered.length, 0) : 0;
+  return {
+    state,
+    count: rows.length + undelivered,
+    overdue: rows.filter((row) => row.isOverdue && !row.hasDefaulted).length,
+    refresh,
+    answer,
+    retryDelivery,
+    acknowledgeDelivery,
+  };
 }

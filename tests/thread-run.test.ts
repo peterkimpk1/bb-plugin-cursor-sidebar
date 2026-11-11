@@ -183,10 +183,38 @@ describe("decisions", () => {
     const bridge = createDecisionsBridge(sdk);
     await bridge.list(false);
     const input = { projectId: "npi", taskId: "1", answer: { kind: "accept-default" as const } };
-    expect(await bridge.answer(input)).toEqual({ ok: true, error: null });
+    // An Opsdesk that does not report delivery reads as nothing to show.
+    expect(await bridge.answer(input)).toEqual({ ok: true, error: null, delivery: null });
     expect(callRpc).toHaveBeenCalledWith(expect.objectContaining({ pluginId: "opsdesk", method: "answerDecision", input }));
     await bridge.list(false);
     expect(callRpc.mock.calls.filter(([call]) => call.method === "listProjects")).toHaveLength(2);
+  });
+
+  test("passes Opsdesk's delivery report and undelivered answers through, and forwards retry and let-go", async () => {
+    const undelivered = { taskId: "9", key: "NM-9", title: "Approve?", answer: "**Peter approved.**", outcome: "failed", threadId: "thr_a", detail: "busy", updatedAt: "2026-11-11T00:00:00Z" };
+    const { sdk, callRpc } = opsdesk({
+      listProjects: () => ({ projects: [{ id: "npi", name: "npi-manager", hasTasksProject: true }] }),
+      getDecisions: () => ({ rows: [], undelivered: [undelivered], summary: { open: 0, approvals: 0, overdue: 0 } }),
+      answerDecision: () => ({ ok: true, error: null, delivery: { outcome: "no-asker", threadId: null, detail: "No asker." } }),
+      retryDecisionDelivery: () => ({ ok: true, error: null, delivery: { outcome: "delivered", threadId: "thr_a", detail: null } }),
+      acknowledgeDecisionDelivery: () => ({ ok: true, error: null }),
+    });
+    const bridge = createDecisionsBridge(sdk);
+    const listed = await bridge.list(true);
+    expect(listed.projects[0]!.undelivered).toEqual([
+      { taskId: "9", key: "NM-9", title: "Approve?", answer: "**Peter approved.**", outcome: "failed", threadId: "thr_a", detail: "busy" },
+    ]);
+    expect((await bridge.answer({ projectId: "npi", taskId: "9", answer: { kind: "approve", note: "" } })).delivery)
+      .toEqual({ outcome: "no-asker", threadId: null, detail: "No asker." });
+    expect((await bridge.retryDelivery({ projectId: "npi", taskId: "9" })).delivery?.outcome).toBe("delivered");
+    expect(await bridge.acknowledgeDelivery({ projectId: "npi", taskId: "9" })).toEqual({ ok: true, error: null });
+    expect(callRpc).toHaveBeenCalledWith(expect.objectContaining({ method: "retryDecisionDelivery", input: { projectId: "npi", taskId: "9" } }));
+    expect(callRpc).toHaveBeenCalledWith(expect.objectContaining({ method: "acknowledgeDecisionDelivery", input: { projectId: "npi", taskId: "9" } }));
+  });
+
+  test("an Opsdesk without delivery tracking lists no undelivered answers", async () => {
+    const { sdk } = opsdesk({ listProjects: () => ({ projects: [{ id: "npi", name: "npi-manager", hasTasksProject: true }] }) });
+    expect((await createDecisionsBridge(sdk).list(true)).projects[0]!.undelivered).toEqual([]);
   });
 
   test("reports Opsdesk as unavailable instead of failing", async () => {

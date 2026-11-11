@@ -11,7 +11,7 @@ import { z } from "zod";
 import { derivedProjectName, normalizeDirectoryPath } from "./project-name";
 import { coerceSidebarView } from "./sidebar-view";
 import { createThreadRunReader } from "./thread-runs-reader";
-import { createDecisionsBridge, decisionAnswerSchema, decisionsResultSchema } from "./decisions-bridge";
+import { answerResultSchema, createDecisionsBridge, decisionAnswerSchema, decisionsResultSchema } from "./decisions-bridge";
 
 const migrations = [
   // `snoozed_*` are kept only so an existing store migrates without a table
@@ -100,7 +100,14 @@ const threadRunSchema = z.object({
   turnStartedAt: z.number().nullable(),
 });
 export type ThreadRun = z.infer<typeof threadRunSchema>;
-export type { DecisionAnswer, DecisionProject, DecisionRow, DecisionsResult } from "./decisions-bridge";
+export type {
+  DecisionAnswer,
+  DecisionDelivery,
+  DecisionProject,
+  DecisionRow,
+  DecisionsResult,
+  UndeliveredAnswer,
+} from "./decisions-bridge";
 
 /**
  * The Bots tab reads bots from the separate `bots-sidebar` plugin. A plugin's
@@ -395,6 +402,16 @@ export const cursorSidebarRpcContract = defineRpcContract({
       taskId: z.string().trim().min(1),
       answer: decisionAnswerSchema,
     }),
+    output: answerResultSchema,
+  },
+  retryDecisionDelivery: {
+    // Send a recorded answer to its asking thread again.
+    input: z.object({ projectId: z.string().trim().min(1), taskId: z.string().trim().min(1) }),
+    output: answerResultSchema,
+  },
+  acknowledgeDecisionDelivery: {
+    // Leave an answer undelivered on purpose.
+    input: z.object({ projectId: z.string().trim().min(1), taskId: z.string().trim().min(1) }),
     output: z.object({ ok: z.boolean(), error: z.string().nullable() }),
   },
 });
@@ -727,6 +744,12 @@ export default function plugin(bb: BbPluginApi) {
     },
     answerDecision(input) {
       return decisions.answer(input);
+    },
+    retryDecisionDelivery(input) {
+      return decisions.retryDelivery(input);
+    },
+    acknowledgeDecisionDelivery(input) {
+      return decisions.acknowledgeDelivery(input);
     },
   });
 

@@ -2,7 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import { expect, test } from "vitest";
 import { loadPluginApp, renderSlot, type PluginRpcTestHandlers } from "@get-bb/plugin-sdk/testing/app";
 import type { PluginSidebarThread, PluginThreadListProps } from "@get-bb/plugin-sdk/app";
-import type { DecisionRow, DecisionsResult, ThreadRun, cursorSidebarRpcContract } from "../src/server";
+import type { DecisionRow, DecisionsResult, ThreadRun, UndeliveredAnswer, cursorSidebarRpcContract } from "../src/server";
 import { sidebarViewSchema } from "../src/server";
 import { DEFAULT_SIDEBAR_VIEW } from "../src/sidebar-view";
 
@@ -103,7 +103,7 @@ test("the Decisions chip opens Opsdesk's queue in the sidebar and answers throug
   let readError: string | null = null;
   const queue = (): DecisionsResult => ({
     available: true, reason: null,
-    projects: [{ projectId: "npi", name: "npi-manager", error: readError, rows: readError === null ? rows : [] }],
+    projects: [{ projectId: "npi", name: "npi-manager", error: readError, rows: readError === null ? rows : [], undelivered: [] }],
   });
   const slot = await mount({
     threadRuns: ({ threads }) => ({ runs: threads.map(({ threadId }) => ({ threadId, model: null, modelLabel: null, reasoningLevel: null, turnStartedAt: null })) }),
@@ -111,7 +111,7 @@ test("the Decisions chip opens Opsdesk's queue in the sidebar and answers throug
     answerDecision: (input) => {
       answers.push(input);
       rows = rows.filter((row) => row.taskId !== input.taskId);
-      return { ok: true, error: null };
+      return { ok: true, error: null, delivery: { outcome: "delivered", threadId: "thr_asker", detail: null } };
     },
   }, [thread("Anything")]);
 
@@ -154,5 +154,120 @@ test("the Decisions chip opens Opsdesk's queue in the sidebar and answers throug
   // Active and Decisions each replace the list, so turning one on turns the other off.
   fireEvent.click(screen.getByRole("button", { name: /^Active:/ }));
   expect(screen.getByRole("button", { name: /^Decisions:/ }).getAttribute("aria-pressed")).toBe("false");
+  slot.lifecycle.unmount();
+});
+
+const noRuns = ({ threads }: { threads: { threadId: string }[] }) => ({
+  runs: threads.map(({ threadId }) => ({ threadId, model: null, modelLabel: null, reasoningLevel: null, turnStartedAt: null })),
+});
+
+test("an answer the asking thread was not told stays as a Not delivered card until a retry delivers it", async () => {
+  let rows = [decision("2469", { kind: "approval", defaultPick: null, title: "Apply SL-0 allocation migration to production?" })];
+  let undelivered: UndeliveredAnswer[] = [];
+  let sendWorks = false;
+  const calls: { method: string; input: unknown }[] = [];
+  const failed = { outcome: "failed", threadId: "thr_asker", detail: "Sending the answer to thr_asker failed: thread busy" };
+  const slot = await mount({
+    threadRuns: noRuns,
+    decisions: () => ({ available: true, reason: null, projects: [{ projectId: "npi", name: "npi-manager", error: null, rows, undelivered }] }),
+    answerDecision: (input) => {
+      calls.push({ method: "answerDecision", input });
+      rows = [];
+      undelivered = [{ taskId: "2469", key: "NM-2469", title: "Apply SL-0 allocation migration to production?", answer: "**Peter approved.**", outcome: "failed", threadId: "thr_asker", detail: failed.detail }];
+      return { ok: true, error: null, delivery: failed };
+    },
+    retryDecisionDelivery: (input) => {
+      calls.push({ method: "retryDecisionDelivery", input });
+      if (!sendWorks) return { ok: true, error: null, delivery: failed };
+      undelivered = [];
+      return { ok: true, error: null, delivery: { outcome: "delivered", threadId: "thr_asker", detail: null } };
+    },
+  }, [thread("Anything")]);
+
+  fireEvent.click(await screen.findByRole("button", { name: "Decisions: 1 waiting on you" }));
+  const panel = (await screen.findByText("1 waiting · 1 approval")).closest("[role=tabpanel]") as HTMLElement;
+  await act(async () => { fireEvent.click(within(panel).getByRole("button", { name: "Approve" })); });
+
+  // The approval is recorded, but the card does not vanish: it says the thread was not told.
+  await within(panel).findByText("Not delivered");
+  expect(within(panel).getByText("Your answer is recorded, but sending it to thr_asker failed.")).toBeTruthy();
+  await within(panel).findByText("1 not delivered");
+  expect(screen.getByRole("button", { name: "Decisions: 1 waiting on you" })).toBeTruthy();
+  expect(within(panel).queryByRole("button", { name: "Approve" })).toBeNull();
+
+  // A retry that fails again keeps the card; one that works clears it.
+  await act(async () => { fireEvent.click(within(panel).getByRole("button", { name: "Retry" })); });
+  expect(within(panel).getByText("Not delivered")).toBeTruthy();
+  sendWorks = true;
+  await act(async () => { fireEvent.click(within(panel).getByRole("button", { name: "Retry" })); });
+  await waitFor(() => expect(within(panel).queryByText("Not delivered")).toBeNull());
+  await within(panel).findByText("Nothing is waiting on you");
+
+  // One answer write; the retries only ask Opsdesk to send.
+  expect(calls.map((call) => call.method)).toEqual(["answerDecision", "retryDecisionDelivery", "retryDecisionDelivery"]);
+  expect(calls[1]!.input).toEqual({ projectId: "npi", taskId: "2469" });
+  slot.lifecycle.unmount();
+});
+
+test("a missing or interrupted delivery from Opsdesk's list is shown, and letting one go clears it", async () => {
+  let undelivered: UndeliveredAnswer[] = [
+    { taskId: "2463", key: "NM-2463", title: "Stop two orphaned dev servers?", answer: "**Peter approved.**", outcome: "no-asker", threadId: null, detail: null },
+    { taskId: "2468", key: "NM-2468", title: "Accept the MW-3 design?", answer: "**Peter approved.**", outcome: "interrupted", threadId: "thr_x", detail: null },
+  ];
+  const acknowledged: unknown[] = [];
+  const slot = await mount({
+    threadRuns: noRuns,
+    decisions: () => ({ available: true, reason: null, projects: [{ projectId: "npi", name: "npi-manager", error: null, rows: [], undelivered }] }),
+    acknowledgeDecisionDelivery: (input) => {
+      acknowledged.push(input);
+      undelivered = undelivered.filter((u) => u.taskId !== input.taskId);
+      return { ok: true, error: null };
+    },
+  }, [thread("Anything")]);
+
+  fireEvent.click(await screen.findByRole("button", { name: "Decisions: 2 waiting on you" }));
+  const panel = (await screen.findByText("2 not delivered")).closest("[role=tabpanel]") as HTMLElement;
+  expect(within(panel).getByText("Your answer is recorded, but the task names no asking thread, so nobody was told.")).toBeTruthy();
+  expect(within(panel).getByText(/sending it was cut off\. The thread may already have it; retrying can send it twice\./)).toBeTruthy();
+
+  const card = within(panel).getByText("Stop two orphaned dev servers?").closest("li") as HTMLElement;
+  await act(async () => { fireEvent.click(within(card).getByRole("button", { name: "Let go" })); });
+  await waitFor(() => expect(within(panel).queryByText("Stop two orphaned dev servers?")).toBeNull());
+  expect(acknowledged).toEqual([{ projectId: "npi", taskId: "2463" }]);
+  expect(within(panel).getByText("1 not delivered")).toBeTruthy();
+  slot.lifecycle.unmount();
+});
+
+test("an answer Opsdesk could not record keeps the card and the exact typed note for a retry", async () => {
+  let rows = [decision("2470", { kind: "approval", defaultPick: null, title: "Send the update?" })];
+  const answers: unknown[] = [];
+  let fail = true;
+  const slot = await mount({
+    threadRuns: noRuns,
+    decisions: () => ({ available: true, reason: null, projects: [{ projectId: "npi", name: "npi-manager", error: null, rows, undelivered: [] }] }),
+    answerDecision: (input) => {
+      answers.push(input);
+      if (fail) return { ok: false, error: "Your answer is on NM-2470, but closing the task failed, so the asker has not been told. Try again; the answer will not be written twice.", delivery: null };
+      rows = [];
+      return { ok: true, error: null, delivery: { outcome: "delivered", threadId: "thr_a", detail: null } };
+    },
+  }, [thread("Anything")]);
+
+  fireEvent.click(await screen.findByRole("button", { name: "Decisions: 1 waiting on you" }));
+  const panel = (await screen.findByText("1 waiting · 1 approval")).closest("[role=tabpanel]") as HTMLElement;
+  fireEvent.click(within(panel).getByRole("button", { name: "Decline…" }));
+  const note = "Not yet:  drop the pricing line first.";
+  fireEvent.change(within(panel).getByRole("textbox"), { target: { value: note } });
+  await act(async () => { fireEvent.click(within(panel).getByRole("button", { name: "Decline" })); });
+
+  await within(panel).findByText(/closing the task failed/);
+  expect((within(panel).getByRole("textbox") as HTMLTextAreaElement).value).toBe(note);
+  fail = false;
+  await act(async () => { fireEvent.click(within(panel).getByRole("button", { name: "Decline" })); });
+  await within(panel).findByText("Nothing is waiting on you");
+  expect(answers).toEqual([
+    { projectId: "npi", taskId: "2470", answer: { kind: "decline", note } },
+    { projectId: "npi", taskId: "2470", answer: { kind: "decline", note } },
+  ]);
   slot.lifecycle.unmount();
 });

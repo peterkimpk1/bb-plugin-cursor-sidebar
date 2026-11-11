@@ -2,7 +2,8 @@ import { useEffect, useId, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
-import type { DecisionAnswer, DecisionRow } from "./server";
+import type { DecisionAnswer, DecisionRow, UndeliveredAnswer } from "./server";
+import { isSettledDelivery } from "./decision-delivery";
 import type { Decisions } from "./useDecisions";
 
 /**
@@ -33,14 +34,18 @@ export function DecisionsView({ decisions, onNavigate }: { decisions: Decisions;
     return <Empty title="Opsdesk isn’t answering" detail="Decisions come from the Opsdesk plugin. Enable it to see them here." />;
   }
 
-  const projects = state.projects.filter((project) => project.rows.length > 0 || project.error !== null);
+  const projects = state.projects.filter(
+    (project) => project.rows.length > 0 || project.undelivered.length > 0 || project.error !== null,
+  );
   const rows = projects.flatMap((project) => project.rows);
+  const undelivered = projects.reduce((sum, project) => sum + project.undelivered.length, 0);
   const approvals = rows.filter((row) => row.kind === "approval").length;
   const defaulted = rows.filter((row) => row.hasDefaulted).length;
   const overdue = rows.filter((row) => row.isOverdue && !row.hasDefaulted).length;
   const unread = projects.filter((project) => project.error !== null);
   const summary = [
-    rows.length > 0 ? `${rows.length} waiting` : unread.length > 0 ? "Couldn’t read the queue" : "Nothing waiting on you",
+    rows.length > 0 ? `${rows.length} waiting` : unread.length > 0 ? "Couldn’t read the queue" : undelivered > 0 ? null : "Nothing waiting on you",
+    undelivered ? `${undelivered} not delivered` : null,
     approvals ? `${approvals} approval${approvals === 1 ? "" : "s"}` : null,
     defaulted ? `${defaulted} defaulted` : null,
     overdue ? `${overdue} overdue` : null,
@@ -84,14 +89,28 @@ export function DecisionsView({ decisions, onNavigate }: { decisions: Decisions;
               </p>
             ) : null}
             <ul className="flex flex-col gap-1.5">
+              {project.undelivered.map((item) => (
+                <UndeliveredCard
+                  key={`undelivered-${item.taskId}`}
+                  item={item}
+                  onNavigate={onNavigate}
+                  onRetry={async () => {
+                    const delivery = await decisions.retryDelivery(project.projectId, item.taskId);
+                    if (isSettledDelivery(delivery)) toast.success(`${item.key}: the asking thread has the answer`, { description: item.title });
+                  }}
+                  onLetGo={() => decisions.acknowledgeDelivery(project.projectId, item.taskId)}
+                />
+              ))}
               {project.rows.map((row) => (
                 <DecisionCard
                   key={row.taskId}
                   row={row}
                   onNavigate={onNavigate}
                   onAnswer={async (answer) => {
-                    await decisions.answer(project.projectId, row.taskId, answer);
-                    toast.success(`${row.key} ${answer.kind === "dismiss" ? "dismissed" : "answered"}`, { description: row.title });
+                    const delivery = await decisions.answer(project.projectId, row.taskId, answer);
+                    const done = `${row.key} ${answer.kind === "dismiss" ? "dismissed" : "answered"}`;
+                    if (isSettledDelivery(delivery)) toast.success(done, { description: row.title });
+                    else toast.warning(`${done}, but the asking thread wasn’t told`, { description: row.title });
                   }}
                 />
               ))}
@@ -252,6 +271,68 @@ function DecisionCard({
 }
 
 /** Opens the task in BB Tasks, the same route Opsdesk links to. */
+const UNDELIVERED_REASON: Record<UndeliveredAnswer["outcome"], (threadId: string | null) => string> = {
+  "no-asker": () => "Your answer is recorded, but the task names no asking thread, so nobody was told.",
+  "asker-gone": (threadId) => `Your answer is recorded, but the asking thread${threadId ? ` ${threadId}` : ""} is archived.`,
+  failed: (threadId) => `Your answer is recorded, but sending it to ${threadId ?? "the asking thread"} failed.`,
+  interrupted: () => "Your answer is recorded, but sending it was cut off. The thread may already have it; retrying can send it twice.",
+};
+
+/** An answered task whose asking thread was not told: retry the send, or let it go. */
+function UndeliveredCard({
+  item,
+  onNavigate,
+  onRetry,
+  onLetGo,
+}: {
+  item: UndeliveredAnswer;
+  onNavigate: () => void;
+  onRetry: () => Promise<void>;
+  onLetGo: () => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const run = async (action: () => Promise<void>) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await action();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <li className="cs-decision cs-undelivered mx-1.5 rounded-md border border-sidebar-border px-2.5 py-2" data-undelivered={item.outcome}>
+      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-2xs leading-4 text-sidebar-foreground/73">
+        <TaskLink taskKey={item.key} onNavigate={onNavigate} />
+        <span className="font-medium text-[var(--warning-text)]">Not delivered</span>
+      </div>
+      <p className="mt-0.5 text-xs font-medium leading-snug text-sidebar-foreground/90">{item.title}</p>
+      <p role="status" title={item.detail ?? undefined} className="mt-1 text-2xs leading-4 text-sidebar-foreground/73">
+        {UNDELIVERED_REASON[item.outcome](item.threadId)}
+      </p>
+      {item.answer.length > 0 ? (
+        <p className="mt-1 line-clamp-2 text-2xs leading-4 text-sidebar-foreground/60">{item.answer.replace(/\*\*/g, "")}</p>
+      ) : null}
+      <div className="mt-1.5 flex flex-wrap gap-1.5">
+        <button type="button" className={PRIMARY} disabled={busy} onClick={() => void run(onRetry)}>
+          {busy ? "Sending…" : "Retry"}
+        </button>
+        <button type="button" className={SECONDARY} disabled={busy} onClick={() => void run(onLetGo)}>
+          Let go
+        </button>
+      </div>
+      {error !== null ? (
+        <p role="alert" className="mt-1 text-2xs text-destructive">
+          {error}
+        </p>
+      ) : null}
+    </li>
+  );
+}
+
 function TaskLink({ taskKey, onNavigate }: { taskKey: string; onNavigate: () => void }) {
   return (
     <a
