@@ -1,5 +1,5 @@
 import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { loadPluginApp, renderSlot, type PluginRpcTestHandlers } from "@get-bb/plugin-sdk/testing/app";
 import type { PluginSidebarThread, PluginThreadListProps } from "@get-bb/plugin-sdk/app";
 import type { DecisionRow, DecisionsResult, ThreadRun, UndeliveredAnswer, cursorSidebarRpcContract } from "../src/server";
@@ -272,5 +272,180 @@ test("an answer Opsdesk could not record keeps the card and the exact typed note
     { projectId: "npi", taskId: "2470", answer: { kind: "decline", note } },
     { projectId: "npi", taskId: "2470", answer: { kind: "decline", note } },
   ]);
+  slot.lifecycle.unmount();
+});
+
+// NM-2510: a decision answered, dismissed or closed anywhere but this sidebar
+// reaches it only through Tasks, which the sidebar cannot hear. These fixtures
+// stand in for Opsdesk's queue over Tasks; nothing here writes an answer.
+
+const manassas = decision("2506", { title: "Approve six 2026 Manassas name changes?", defaultPick: "hold the six 2026 rows unchanged until Peter explicitly approves." });
+const other = decision("2507", { title: "Keep the old export column?" });
+
+function queueOf(projects: Record<string, DecisionRow[]>, error: string | null = null): DecisionsResult {
+  return {
+    available: true, reason: null,
+    projects: Object.entries(projects).map(([projectId, rows]) => ({ projectId, name: projectId, error, rows: error === null ? rows : [], undelivered: [] })),
+  };
+}
+
+function decisionReads(slot: { inspection: { rpcCalls: { method: string; input: unknown }[] } }) {
+  return slot.inspection.rpcCalls.filter(({ method }) => method === "decisions").map(({ input }) => input as { fresh?: boolean });
+}
+
+test("a decision answered in its own thread leaves the open list on the next poll, and nothing is answered from here", async () => {
+  vi.useFakeTimers({ toFake: ["setInterval", "clearInterval"] });
+  try {
+    let rows = [manassas, other];
+    const writes: unknown[] = [];
+    const slot = await mount({
+      threadRuns: noRuns,
+      decisions: () => queueOf({ npi: rows }),
+      answerDecision: (input) => { writes.push(input); return { ok: true, error: null, delivery: null }; },
+    }, [thread("Anything")]);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Decisions: 2 waiting on you" }));
+    const panel = (await screen.findByText("2 waiting")).closest("[role=tabpanel]") as HTMLElement;
+    expect(within(panel).getByText("Approve six 2026 Manassas name changes?")).toBeTruthy();
+
+    // Peter answers in the asking thread; its worker records the answer and closes the task.
+    rows = [other];
+    await act(async () => { vi.advanceTimersByTime(30_000); });
+    await waitFor(() => expect(within(panel).queryByText("Approve six 2026 Manassas name changes?")).toBeNull());
+    expect(within(panel).getByText("1 waiting")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Decisions: 1 waiting on you" })).toBeTruthy();
+    expect(writes).toEqual([]);
+
+    // With the list closed, only the chip's count polls, and rarely.
+    fireEvent.click(screen.getByRole("button", { name: "Decisions: 1 waiting on you" }));
+    const before = decisionReads(slot).length;
+    await act(async () => { vi.advanceTimersByTime(60_000); });
+    expect(decisionReads(slot).length).toBe(before);
+    rows = [];
+    await act(async () => { vi.advanceTimersByTime(60_000); });
+    await screen.findByRole("button", { name: "Decisions: 0 waiting on you" }).catch(() => null);
+    expect(decisionReads(slot).length).toBe(before + 1);
+    slot.lifecycle.unmount();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+test("focus and a reconnect read past the shared poll, so a task closed elsewhere is gone when you look", async () => {
+  let rows = [manassas, other];
+  const slot = await mount({ threadRuns: noRuns, decisions: () => queueOf({ npi: rows }) }, [thread("Anything")]);
+  fireEvent.click(await screen.findByRole("button", { name: "Decisions: 2 waiting on you" }));
+  const panel = (await screen.findByText("2 waiting")).closest("[role=tabpanel]") as HTMLElement;
+
+  rows = [other];
+  const beforeFocus = decisionReads(slot).length;
+  await act(async () => { window.dispatchEvent(new Event("focus")); });
+  await waitFor(() => expect(within(panel).queryByText("Approve six 2026 Manassas name changes?")).toBeNull());
+  expect(decisionReads(slot).slice(beforeFocus)).toEqual([{ fresh: true }]);
+
+  rows = [];
+  await slot.setRealtimeConnectionState("reconnecting");
+  const beforeReconnect = decisionReads(slot).length;
+  await slot.setRealtimeConnectionState("connected");
+  await within(panel).findByText("Nothing waiting on you");
+  expect(decisionReads(slot).slice(beforeReconnect)).toEqual([{ fresh: true }]);
+  slot.lifecycle.unmount();
+});
+
+test("a thread-side dismissal that never reached Tasks keeps the card waiting, with no default applied", async () => {
+  // Dismissing the question in the thread closes only that prompt. The task
+  // stays open in Tasks, so the queue still lists it and no answer is written.
+  const writes: unknown[] = [];
+  const slot = await mount({
+    threadRuns: noRuns,
+    decisions: () => queueOf({ npi: [manassas] }),
+    answerDecision: (input) => { writes.push(input); return { ok: true, error: null, delivery: null }; },
+  }, [thread("Worker", { hasPendingInteraction: false })]);
+  fireEvent.click(await screen.findByRole("button", { name: "Decisions: 1 waiting on you" }));
+  const panel = (await screen.findByText("1 waiting")).closest("[role=tabpanel]") as HTMLElement;
+  await act(async () => { window.dispatchEvent(new Event("focus")); });
+  await waitFor(() => expect(decisionReads(slot).filter((read) => read.fresh).length).toBeGreaterThanOrEqual(2));
+  expect(within(panel).getByText("Approve six 2026 Manassas name changes?")).toBeTruthy();
+  expect(within(panel).getByRole("button", { name: "Accept default" })).toBeTruthy();
+  expect(writes).toEqual([]);
+  slot.lifecycle.unmount();
+});
+
+test("a stale card answered after its task closed elsewhere writes nothing and drops out on a fresh read", async () => {
+  let open = true;
+  const tasksWrites: unknown[] = [];
+  const attempts: unknown[] = [];
+  const slot = await mount({
+    threadRuns: noRuns,
+    decisions: () => queueOf({ npi: open ? [manassas, other] : [other] }),
+    answerDecision: (input) => {
+      attempts.push(input);
+      // Opsdesk re-reads the task before writing and refuses one that is no longer open.
+      if (input.taskId === "2506" && !open) return { ok: false, error: "That decision is no longer open in this Tasks project.", delivery: null };
+      tasksWrites.push(input);
+      return { ok: true, error: null, delivery: { outcome: "delivered", threadId: "thr_a", detail: null } };
+    },
+  }, [thread("Anything")]);
+  fireEvent.click(await screen.findByRole("button", { name: "Decisions: 2 waiting on you" }));
+  const panel = (await screen.findByText("2 waiting")).closest("[role=tabpanel]") as HTMLElement;
+
+  open = false; // Answered in the asking thread; the card on screen is now stale.
+  const card = within(panel).getByText("Approve six 2026 Manassas name changes?").closest("li") as HTMLElement;
+  await act(async () => { fireEvent.click(within(card).getByRole("button", { name: "Accept default" })); });
+  await waitFor(() => expect(within(panel).queryByText("Approve six 2026 Manassas name changes?")).toBeNull());
+  expect(attempts).toEqual([{ projectId: "npi", taskId: "2506", answer: { kind: "accept-default" } }]);
+  expect(tasksWrites).toEqual([]);
+  expect(within(panel).getByText("Keep the old export column?")).toBeTruthy();
+  slot.lifecycle.unmount();
+});
+
+test("a failed refresh keeps the cards and says they are from the last read that worked", async () => {
+  let failing = false;
+  const slot = await mount({
+    threadRuns: noRuns,
+    decisions: () => { if (failing) throw new Error("opsdesk: request timed out"); return queueOf({ npi: [manassas] }); },
+  }, [thread("Anything")]);
+  fireEvent.click(await screen.findByRole("button", { name: "Decisions: 1 waiting on you" }));
+  const panel = (await screen.findByText("1 waiting")).closest("[role=tabpanel]") as HTMLElement;
+
+  failing = true;
+  fireEvent.click(within(panel).getByRole("button", { name: "Refresh decisions" }));
+  const stale = await within(panel).findByText(/^Couldn’t refresh just now; showing the list from .+\. It retries on its own\.$/);
+  expect(stale.getAttribute("title")).toMatch(/request timed out/);
+  expect(within(panel).getByText("Approve six 2026 Manassas name changes?")).toBeTruthy();
+
+  failing = false;
+  fireEvent.click(within(panel).getByRole("button", { name: "Refresh decisions" }));
+  await waitFor(() => expect(within(panel).queryByText(/Couldn’t refresh just now/)).toBeNull());
+  slot.lifecycle.unmount();
+});
+
+test("closing a task in one project removes only that project's card, matched by project and task id", async () => {
+  // Same key and title in two projects: only the exact (project, task) pair leaves.
+  const twin = (taskId: string) => decision(taskId, { key: "NM-2506", title: "Approve six 2026 Manassas name changes?" });
+  let projects: Record<string, DecisionRow[]> = { alpha: [twin("A-1")], beta: [twin("B-1")] };
+  const answers: unknown[] = [];
+  const slot = await mount({
+    threadRuns: noRuns,
+    decisions: () => queueOf(projects),
+    answerDecision: (input) => {
+      answers.push(input);
+      projects = { ...projects, [input.projectId]: projects[input.projectId]!.filter((row) => row.taskId !== input.taskId) };
+      return { ok: true, error: null, delivery: { outcome: "delivered", threadId: "thr_b", detail: null } };
+    },
+  }, [thread("Anything")]);
+  fireEvent.click(await screen.findByRole("button", { name: "Decisions: 2 waiting on you" }));
+  const panel = (await screen.findByText("2 waiting")).closest("[role=tabpanel]") as HTMLElement;
+
+  projects = { alpha: [], beta: [twin("B-1")] };
+  await act(async () => { window.dispatchEvent(new Event("focus")); });
+  // An emptied project drops its section; the other project's twin stays.
+  await waitFor(() => expect(within(panel).queryByRole("region", { name: "alpha" })).toBeNull());
+  expect(within(panel).getAllByText("Approve six 2026 Manassas name changes?")).toHaveLength(1);
+  const beta = within(panel).getByRole("region", { name: "beta" });
+  expect(within(beta).getByText("Approve six 2026 Manassas name changes?")).toBeTruthy();
+
+  await act(async () => { fireEvent.click(within(beta).getByRole("button", { name: "Accept default" })); });
+  expect(answers).toEqual([{ projectId: "beta", taskId: "B-1", answer: { kind: "accept-default" } }]);
   slot.lifecycle.unmount();
 });

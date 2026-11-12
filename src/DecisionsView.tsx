@@ -71,6 +71,11 @@ export function DecisionsView({ decisions, onNavigate }: { decisions: Decisions;
           <Icon name="RotateCcw" className={cn("size-3.5", refreshing && "animate-spin motion-reduce:animate-none")} />
         </button>
       </div>
+      {state.refreshError !== null ? (
+        <p role="status" title={state.refreshError} className="px-3 pb-1 text-2xs text-sidebar-foreground/60">
+          Couldn’t refresh just now; showing the list from {checkedLabel(state.checkedAt)}. It retries on its own.
+        </p>
+      ) : null}
       {rows.length === 0 && projects.length === 0 ? (
         <Empty title="Nothing is waiting on you" detail="Tasks labelled decision or approval show up here until you answer them." />
       ) : null}
@@ -120,6 +125,11 @@ export function DecisionsView({ decisions, onNavigate }: { decisions: Decisions;
       </div>
     </>
   );
+}
+
+/** "12:04", the clock time of the last read that worked. */
+function checkedLabel(at: number): string {
+  return new Date(at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
 }
 
 const BUTTON =

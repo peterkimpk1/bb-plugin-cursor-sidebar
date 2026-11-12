@@ -94,8 +94,12 @@ export const answerResultSchema = z.object({
 });
 const acknowledgeResultSchema = z.object({ ok: z.boolean(), error: z.string().nullable() });
 
-/** Every open window polls; one read serves them all for this long. */
-const SHARED_READ_MS = 45_000;
+/**
+ * Every open window polls; one read serves them all for this long. Shorter
+ * than the open list's poll, so a window watching the list always reads
+ * Tasks as it is now.
+ */
+const SHARED_READ_MS = 15_000;
 /**
  * Tasks rejects a paged read when tasks change mid-read, which busy agents do
  * often, so a failed project read is tried again after these pauses.
