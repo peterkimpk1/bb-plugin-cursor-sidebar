@@ -1,15 +1,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useRpc } from "@get-bb/plugin-sdk/app";
+import { useRealtimeConnectionState, useRpc } from "@get-bb/plugin-sdk/app";
 import type { DecisionAnswer, DecisionDelivery, DecisionProject, UndeliveredAnswer, cursorSidebarRpcContract } from "./server";
 import { isSettledDelivery } from "./decision-delivery";
 
-/** Opsdesk publishes on its own channel, which this plugin cannot hear, so the queue polls. */
-const POLL_MS = 2 * 60_000;
+/**
+ * Tasks and Opsdesk publish on their own channels, which this plugin cannot
+ * hear, so a task answered or closed anywhere else (in the asking thread, from
+ * the CLI, on the board) only leaves the queue on the next read. The list on
+ * screen reads often; the chip's count alone reads rarely.
+ */
+const WATCHING_POLL_MS = 30_000;
+const IDLE_POLL_MS = 2 * 60_000;
+/** Focus and a tab coming back read past the server's shared read, at most this often. */
+const WAKE_GAP_MS = 5_000;
 
 export type DecisionsState =
   | { status: "loading" }
   | { status: "unavailable"; reason: string | null }
-  | { status: "ready"; projects: DecisionProject[] };
+  | {
+      status: "ready";
+      projects: DecisionProject[];
+      /** When Opsdesk last answered a read. */
+      checkedAt: number;
+      /** Why the latest read failed; the cards are then from `checkedAt`. */
+      refreshError: string | null;
+    };
 
 export interface Decisions {
   state: DecisionsState;
@@ -37,8 +52,10 @@ function toUndelivered(row: { taskId: string; key: string; title: string }, deli
   return { taskId: row.taskId, key: row.key, title: row.title, answer: "", outcome, threadId: delivery.threadId, detail: delivery.detail };
 }
 
-export function useDecisions(): Decisions {
+/** `watching` is true while the list is on screen. */
+export function useDecisions(watching: boolean): Decisions {
   const rpc = useRpc<typeof cursorSidebarRpcContract>();
+  const connection = useRealtimeConnectionState();
   const [state, setState] = useState<DecisionsState>({ status: "loading" });
   const generation = useRef(0);
 
@@ -65,14 +82,13 @@ export function useDecisions(): Decisions {
                   undelivered: previous.get(project.projectId)?.undelivered ?? [],
                 },
           );
-          return { status: "ready", projects };
+          return { status: "ready", projects, checkedAt: Date.now(), refreshError: null };
         });
       } catch (cause) {
         if (mine !== generation.current) return;
-        // Keep the last good queue on screen rather than blanking it.
-        setState((current) =>
-          current.status === "ready" ? current : { status: "unavailable", reason: cause instanceof Error ? cause.message : String(cause) },
-        );
+        const reason = cause instanceof Error ? cause.message : String(cause);
+        // Keep the last good queue on screen, and say it is from the last good read.
+        setState((current) => (current.status === "ready" ? { ...current, refreshError: reason } : { status: "unavailable", reason }));
       }
     },
     [rpc],
@@ -80,18 +96,41 @@ export function useDecisions(): Decisions {
 
   useEffect(() => {
     void refresh();
-    const timer = window.setInterval(() => {
-      if (document.visibilityState === "visible") void refresh();
-    }, POLL_MS);
-    const onVisible = () => {
-      if (document.visibilityState === "visible") void refresh();
+  }, [refresh]);
+
+  useEffect(() => {
+    const timer = window.setInterval(
+      () => {
+        if (document.visibilityState === "visible") void refresh();
+      },
+      watching ? WATCHING_POLL_MS : IDLE_POLL_MS,
+    );
+    return () => window.clearInterval(timer);
+  }, [refresh, watching]);
+
+  // Coming back to the window is when a stale card misleads, so it reads fresh.
+  const lastWake = useRef(0);
+  useEffect(() => {
+    const wake = () => {
+      if (document.visibilityState !== "visible" || Date.now() - lastWake.current < WAKE_GAP_MS) return;
+      lastWake.current = Date.now();
+      void refresh(true);
     };
-    document.addEventListener("visibilitychange", onVisible);
+    window.addEventListener("focus", wake);
+    document.addEventListener("visibilitychange", wake);
     return () => {
-      window.clearInterval(timer);
-      document.removeEventListener("visibilitychange", onVisible);
+      window.removeEventListener("focus", wake);
+      document.removeEventListener("visibilitychange", wake);
     };
   }, [refresh]);
+
+  // Signals sent while the connection was down are lost, so a reconnect reads fresh.
+  const lastConnection = useRef(connection);
+  useEffect(() => {
+    const was = lastConnection.current;
+    lastConnection.current = connection;
+    if (was === "reconnecting" && connection === "connected") void refresh(true);
+  }, [connection, refresh]);
 
   /** Applies a change to one project's cards until the next read confirms it. */
   const patchProject = useCallback((projectId: string, patch: (project: DecisionProject) => DecisionProject) => {
@@ -99,14 +138,19 @@ export function useDecisions(): Decisions {
     setState((current) =>
       current.status !== "ready"
         ? current
-        : { status: "ready", projects: current.projects.map((project) => (project.projectId === projectId ? patch(project) : project)) },
+        : { ...current, projects: current.projects.map((project) => (project.projectId === projectId ? patch(project) : project)) },
     );
   }, []);
 
   const answer = useCallback(
     async (projectId: string, taskId: string, decision: DecisionAnswer) => {
       const result = await rpc.call("answerDecision", { projectId, taskId, answer: decision });
-      if (!result.ok) throw new Error(result.error ?? "Opsdesk did not record the answer.");
+      if (!result.ok) {
+        // The card may be stale: the task can have been answered or closed
+        // elsewhere. Reading fresh drops it; Opsdesk wrote nothing.
+        void refresh(true);
+        throw new Error(result.error ?? "Opsdesk did not record the answer.");
+      }
       const delivery = result.delivery;
       // The answer is recorded either way. When the asker was not told, the
       // card turns into a "not delivered" notice instead of disappearing.

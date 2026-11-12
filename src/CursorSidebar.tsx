@@ -1018,8 +1018,8 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
   const [activeOn, setActiveOn] = useActiveFilter();
   // The decision queue replaces the list the way Active does; the two are
   // never on together, and picking a tab goes back to that tab's list.
-  const decisions = useDecisions();
   const [decisionsOn, setDecisionsOn] = useDecisionsView();
+  const decisions = useDecisions(decisionsOn);
   const showDecisions = useCallback(
     (on: boolean) => {
       setDecisionsOn(on);
