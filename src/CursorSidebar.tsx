@@ -109,7 +109,7 @@ import { DecisionsView } from "./DecisionsView";
 import { useDecisions } from "./useDecisions";
 import { useBots } from "./useBots";
 import { membersByBot, threadOwners } from "./bots";
-import { activeEntries } from "./active";
+import { activeEntries, needsInput, shortMachineName } from "./active";
 import { ActiveView } from "./ActiveView";
 import { BotsView, useBotModels } from "./BotsView";
 
@@ -1035,7 +1035,7 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
     [setActiveOn, setDecisionsOn],
   );
   const active = useMemo(() => activeEntries(visible, now), [now, visible]);
-  const activeNeedsYou = useMemo(() => active.filter((entry) => entry.kind === "input").length, [active]);
+  const activeNeedsYou = useMemo(() => active.filter((entry) => needsInput(entry.thread)).length, [active]);
   const ownerByThread = useMemo(() => threadOwners(visible, botBindings ?? []), [botBindings, visible]);
   const botNameById = useMemo(
     () => new Map(bots.status === "ready" ? bots.bots.map((bot) => [bot.id, bot.name]) : []),
@@ -1049,12 +1049,29 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
     () => ({
       ...botsCtx,
       descendantsById: new Map(),
+      // Active pins the row itself, not its family's root, so pinning a child
+      // there pins that child. The tree still lifts the family it belongs to.
+      canPin: (threadId: string) => {
+        const thread = visibleById.get(threadId) ?? rawById.get(threadId);
+        return thread !== undefined && pinAllowed(thread.isArchived);
+      },
+      onTogglePin: (threadId: string, pinned: boolean) => {
+        const thread = visibleById.get(threadId) ?? rawById.get(threadId);
+        const title = thread ? threadDisplayTitle(thread) : "Chat";
+        void actions.setPinned(threadId, pinned).then(
+          () => setAnnouncement(`${title} ${pinned ? "pinned" : "unpinned"}.`),
+          (cause: unknown) =>
+            toast.error(pinned ? "Could not pin the chat" : "Could not unpin the chat", {
+              description: cause instanceof Error ? cause.message : String(cause),
+            }),
+        );
+      },
       statusOf: (threadId: string) => {
         const thread = visibleById.get(threadId);
         return thread === undefined ? undefined : worstThreadStatus([thread]);
       },
     }),
-    [botsCtx, visibleById],
+    [actions, botsCtx, rawById, visibleById],
   );
   const activeBotNameOf = useCallback(
     (threadId: string) => {
@@ -1078,9 +1095,17 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
     },
     [nativeProjectNameById, rawById],
   );
+  const activeThreadOf = useCallback(
+    (threadId: string) => visibleById.get(threadId) ?? rawById.get(threadId),
+    [rawById, visibleById],
+  );
   const activePinnedOf = useCallback(
-    (threadId: string) => pinnedFamilyRoots.has(familyRootOfId(threadId)),
-    [familyRootOfId, pinnedFamilyRoots],
+    (threadId: string) => (visibleById.get(threadId) ?? rawById.get(threadId))?.isPinned ?? false,
+    [rawById, visibleById],
+  );
+  const activeMachineOf = useCallback(
+    (thread: PluginSidebarThread) => shortMachineName((rawById.get(thread.id) ?? thread).host?.name),
+    [rawById],
   );
 
   const markAllRead = useCallback(async () => {
@@ -1422,6 +1447,8 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
                 parentTitleOf={activeParentTitleOf}
                 projectNameOf={activeProjectNameOf}
                 pinnedOf={activePinnedOf}
+                threadOf={activeThreadOf}
+                machineOf={activeMachineOf}
               />
             </div>
           ) : tab === "bots" ? (

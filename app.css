@@ -99,6 +99,13 @@
 }
 
 /* The provider's mark before a row's model name, filled with its tint. */
+.cs-machine-glyph {
+  display: inline-block;
+  width: 11px;
+  height: 11px;
+  margin-right: 4px;
+  vertical-align: -2px;
+}
 .cs-provider-logo {
   display: inline-block;
   width: 10px;
@@ -481,3 +488,25 @@
 
 button.cs-needs-you-count { cursor: pointer; }
 button.cs-needs-you-count:hover { filter: brightness(1.15); }
+
+/* A pinned row's pin reads filled; Hugeicons draws strokes only. */
+/* Rows on other machines while one machine is focused. */
+[data-thread-row-id] {
+  transition: opacity 160ms ease-out;
+}
+.cs-row-dimmed {
+  opacity: 0.32;
+}
+.cs-row-dimmed:hover,
+.cs-row-dimmed:focus-within {
+  opacity: 0.75;
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-thread-row-id] {
+    transition: none;
+  }
+}
+
+.cs-pin-filled path {
+  fill: currentColor;
+}

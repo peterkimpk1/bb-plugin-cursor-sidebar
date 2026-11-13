@@ -59,6 +59,8 @@ import { needsYou } from "./bots";
 import { isRunningTurn, modelLine } from "./thread-run";
 import { useThreadRun } from "./useThreadRuns";
 import { ProviderLogo } from "./ProviderLogo";
+import { MachineGlyph } from "./MachineGlyph";
+import type { MachineKind } from "./active";
 
 /** Everything a row needs that is the same for every row in a section. */
 export interface TreeContext {
@@ -747,6 +749,9 @@ export function ThreadRow({
   activeRailLevels,
   activeElbow,
   context = null,
+  machine = null,
+  pinVisible = false,
+  dimmed = false,
 }: {
   row: ReturnType<typeof flattenShelf>[number];
   section: ProjectSectionData;
@@ -766,6 +771,15 @@ export function ThreadRow({
    * the place of the workspace and machine after the model.
    */
   context?: string | null;
+  /** A glyph for the machine at the head of the context line; its name moves to the hover text. */
+  machine?: { kind: MachineKind; name: string } | null;
+  /**
+   * Keep the pin button on the row at rest, filled while pinned, instead of
+   * only among the hover actions. The Active view uses it.
+   */
+  pinVisible?: boolean;
+  /** Fade the row back while a filter (a focused machine) points elsewhere. */
+  dimmed?: boolean;
 }) {
   const actions = useSidebarThreadActions();
   const { splitProps, layout } = useSidebarThreadSplit(row.thread.id);
@@ -803,6 +817,7 @@ export function ThreadRow({
   const run = useThreadRun(thread, running);
   const model = ctx.view.show.model ? modelLine(run) : null;
   const logo = model === null ? null : <ProviderLogo providerId={thread.providerId} />;
+  const glyph = context !== null && machine !== null ? <MachineGlyph kind={machine.kind} /> : null;
   const shownWorkspace = ctx.view.show.environment && !hideGroupedWorkspace ? workspace : null;
   const shownLocation = ctx.view.show.host && !hideGroupedHost ? location : null;
   const join = (parts: readonly (string | null)[]) => parts.filter(Boolean).join(" · ");
@@ -812,7 +827,7 @@ export function ThreadRow({
   const secondaryMobile = context !== null ? secondaryText : join([model, shownWorkspace]);
   const secondaryTitle =
     context !== null
-      ? secondaryText
+      ? join([machine?.name ?? null, secondaryText])
       : join([model, shownWorkspace === null ? null : workspacePath ?? shownWorkspace, shownLocation]);
   // The resting slot speaks for the whole subtree, so a collapsed parent still
   // shows a running or attention-seeking descendant instead of hiding it.
@@ -927,6 +942,7 @@ export function ThreadRow({
             shelf === "settled" &&
               !isActive &&
               "text-sidebar-foreground/73 hover:bg-sidebar-accent/25 hover:text-sidebar-foreground/73",
+            dimmed && "cs-row-dimmed",
           )}
         >
           {isDropTarget ? (
@@ -1090,7 +1106,7 @@ export function ThreadRow({
               thread.isUnread && "font-medium",
             )}
           />
-          {secondary ? <span className="cs-thread-info mt-px block w-full overflow-hidden whitespace-nowrap text-2xs leading-none text-sidebar-foreground/73" title={secondaryTitle} aria-label={secondaryTitle}><span className="cs-secondary-desktop">{logo}{secondary}</span><span className="cs-secondary-mobile hidden">{logo}{secondaryMobile}</span></span> : null}
+          {secondary ? <span className="cs-thread-info mt-px block w-full overflow-hidden whitespace-nowrap text-2xs leading-none text-sidebar-foreground/73" title={secondaryTitle} aria-label={secondaryTitle}><span className="cs-secondary-desktop">{glyph}{logo}{secondary}</span><span className="cs-secondary-mobile hidden">{glyph}{logo}{secondaryMobile}</span></span> : null}
           </div>
 
           <div className="relative ml-auto flex min-w-6 shrink-0 items-center justify-end gap-1 pl-1">
@@ -1108,7 +1124,7 @@ export function ThreadRow({
                 data-thread-actions=""
                 className="cs-row-actions pointer-events-none absolute inset-y-0 right-0 z-20 flex items-center gap-0.5 pr-0.5 opacity-0 transition-opacity duration-100 ease-out motion-reduce:transition-none group-hover/row:pointer-events-auto group-hover/row:opacity-100 group-focus-within/row:pointer-events-auto group-focus-within/row:opacity-100 focus-within:opacity-100"
               >
-                {pinnedCapable ? (
+                {pinnedCapable && !pinVisible ? (
                   <button
                     type="button"
                     aria-label={rowPinned ? "Unpin" : "Pin"}
@@ -1160,6 +1176,28 @@ export function ThreadRow({
                 </span>
               ) : null}
             </span>
+            {pinVisible && pinnedCapable ? (
+              <button
+                type="button"
+                data-row-pin={rowPinned ? "pinned" : "unpinned"}
+                aria-label={rowPinned ? "Unpin" : "Pin"}
+                aria-pressed={rowPinned}
+                title={rowPinned ? "Unpin" : "Pin"}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  ctx.onTogglePin(thread.id, !rowPinned);
+                }}
+                className={cn(
+                  "cs-row-pin relative z-20 flex size-5 shrink-0 items-center justify-center rounded transition-colors duration-100 ease-out motion-reduce:transition-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring",
+                  rowPinned
+                    ? "text-sidebar-foreground"
+                    : "text-sidebar-foreground/40 hover:text-sidebar-foreground group-hover/row:text-sidebar-foreground/73",
+                )}
+              >
+                <Icon name="Pin" className={cn("size-3.5", rowPinned && "cs-pin-filled")} />
+              </button>
+            ) : null}
             <span className="cs-thread-time pointer-events-none tabular-nums text-xs text-sidebar-foreground/73">
               {running && run?.turnStartedAt != null ? (
                 <WorkingFor startedAt={run.turnStartedAt} now={ctx.now} />

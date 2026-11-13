@@ -5,6 +5,7 @@ import type { PluginSidebarThread, PluginThreadListProps } from "@get-bb/plugin-
 import type { BotsListResult, cursorSidebarRpcContract } from "../src/server";
 import { sidebarViewSchema } from "../src/server";
 import { DEFAULT_SIDEBAR_VIEW } from "../src/sidebar-view";
+import { machineKind } from "../src/active";
 
 const MINUTE = 60_000;
 const HOUR = 60 * MINUTE;
@@ -157,5 +158,143 @@ test("Active shows an empty state when nothing matters right now", async () => {
   fireEvent.click(screen.getByRole("button", { name: /^Active:/ }));
   expect(await screen.findByText("All quiet")).toBeTruthy();
   expect(screen.getByRole("tabpanel").querySelector("[data-thread-row-id]")).toBeNull();
+  slot.lifecycle.unmount();
+});
+
+test("Active nests a child under its working parent and groups a desk's workers under it", async () => {
+  const app = await loadPluginApp(() => import("../app"));
+  const now = Date.now();
+  const threads = [
+    // A desk that is not itself working, with two working children.
+    thread("Chief desk", { updatedAt: now - 9 * HOUR }),
+    thread("Merge queue", { parentThreadId: "Chief desk", activity: RUNNING, indicator: "background-agent", updatedAt: now - 20 * MINUTE }),
+    thread("Orb dispatcher", { parentThreadId: "Chief desk", activity: RUNNING, indicator: "background-agent", updatedAt: now - 50 * MINUTE }),
+    // A working child of a working parent, updated in between.
+    thread("Requalify lanes", { parentThreadId: "Merge queue", activity: RUNNING, indicator: "background-agent", updatedAt: now - 2 * MINUTE }),
+    // A lone worker whose parent is off the list keeps its ↳ line at the top.
+    thread("Coordinate Products", { updatedAt: now - 9 * HOUR }),
+    thread("Fix Products controls", { parentThreadId: "Coordinate Products", activity: RUNNING, indicator: "background-agent", updatedAt: now - 30 * MINUTE }),
+    thread("Design UI", { activity: RUNNING, indicator: "background-agent", updatedAt: now - 10 * MINUTE }),
+  ];
+  const slot = mount(app, threads);
+  const chip = () => screen.getByRole("button", { name: /^Active:/ });
+  await waitFor(() => expect(chip()).toBeTruthy());
+  fireEvent.click(chip());
+  const panel = () => screen.getByRole("tabpanel");
+  const working = () => panel().querySelector('[data-active-kind="working"]') as HTMLElement;
+  const ids = () => Array.from(working().querySelectorAll("[data-thread-row-id]"), (node) => node.getAttribute("data-thread-row-id"));
+  // The desk family is newest (its grandchild ran 2 minutes ago), then Design UI, then the lone worker.
+  await waitFor(() =>
+    expect(ids()).toEqual(["Chief desk", "Merge queue", "Requalify lanes", "Orb dispatcher", "Design UI", "Fix Products controls"]),
+  );
+  // The heading counts real work, not the holder row.
+  expect(within(working()).getByRole("heading").textContent).toBe("Working5");
+  const row = (id: string) => working().querySelector(`[data-thread-row-id="${id}"]`) as HTMLElement;
+  const info = (id: string) => row(id).querySelector(".cs-thread-info")?.getAttribute("aria-label");
+  expect(info("Chief desk")).toBe("NPI Manager · 2 working");
+  expect(row("Chief desk").getAttribute("data-thread-shelf")).toBe("settled");
+  // Nested rows drop the ↳ parent; the lone worker keeps it.
+  expect(info("Requalify lanes")).toBe("NPI Manager");
+  expect(info("Fix Products controls")).toBe("NPI Manager · ↳ Coordinate Products");
+  // A family folds from its parent's toggle.
+  fireEvent.click(within(row("Merge queue")).getByRole("button", { name: "Hide 1 child thread" }));
+  await waitFor(() => expect(ids()).not.toContain("Requalify lanes"));
+  fireEvent.click(within(row("Merge queue")).getByRole("button", { name: "Show 1 child thread" }));
+  await waitFor(() => expect(ids()).toContain("Requalify lanes"));
+  slot.lifecycle.unmount();
+});
+
+test("Active keeps pinned threads on top, shows the pin on every row, pins the row itself, and names the machine", async () => {
+  const app = await loadPluginApp(() => import("../app"));
+  const now = Date.now();
+  const mini = { id: "mini", name: "Peter’s Mac Mini" } as PluginSidebarThread["host"];
+  const threads = [
+    thread("Desk", { updatedAt: now - 9 * HOUR }),
+    // Pinned and stale: still listed, under Pinned.
+    thread("Pinned and quiet", { isPinned: true, updatedAt: now - 9 * HOUR }),
+    // Pinned and asking: under Pinned, and still counted as needing you.
+    thread("Pinned and asking", { isPinned: true, hasPendingInteraction: true, indicator: "waiting-for-input", updatedAt: now - 5 * HOUR }),
+    thread("Child worker", { parentThreadId: "Desk", host: mini, activity: RUNNING, indicator: "background-agent", updatedAt: now - MINUTE }),
+  ];
+  const slot = mount(app, threads);
+  const chip = () => screen.getByRole("button", { name: /^Active:/ });
+  await waitFor(() => expect(chip().getAttribute("aria-label")).toBe("Active: 3 threads, 1 needs you"));
+  fireEvent.click(chip());
+  const panel = () => screen.getByRole("tabpanel");
+  await waitFor(() =>
+    expect(Array.from(panel().querySelectorAll("[data-active-kind]"), (node) => node.getAttribute("aria-label"))).toEqual([
+      "Pinned", "Working",
+    ]),
+  );
+  const pinned = panel().querySelector('[data-active-kind="pinned"]') as HTMLElement;
+  expect(Array.from(pinned.querySelectorAll("[data-thread-row-id]"), (node) => node.getAttribute("data-thread-row-id"))).toEqual([
+    "Pinned and asking", "Pinned and quiet",
+  ]);
+  const row = (id: string) => panel().querySelector(`[data-thread-row-id="${id}"]`) as HTMLElement;
+  // The pin sits on the row at rest, pressed and filled when pinned.
+  const pin = (id: string) => row(id).querySelector("[data-row-pin]") as HTMLButtonElement;
+  expect(pin("Pinned and quiet").getAttribute("aria-pressed")).toBe("true");
+  expect(pin("Pinned and quiet").querySelector(".cs-pin-filled")).not.toBeNull();
+  expect(pin("Child worker").getAttribute("aria-pressed")).toBe("false");
+  expect(row("Child worker").querySelector("[data-thread-actions]")?.querySelector('[aria-label="Pin"]')).toBeNull();
+  // The machine shows as its glyph; its name, without the owner's, moves to the hover text.
+  const info = row("Child worker").querySelector(".cs-thread-info") as HTMLElement;
+  expect(info.getAttribute("aria-label")).toBe("Mac Mini · NPI Manager · ↳ Desk");
+  expect(info.querySelector('.cs-secondary-desktop [data-machine="mini"]')).not.toBeNull();
+  expect(info.querySelector(".cs-secondary-desktop")?.textContent).toBe("NPI Manager · ↳ Desk");
+  expect([machineKind("Mac Mini"), machineKind("MacBook Pro"), machineKind("build-box")]).toEqual(["mini", "laptop", null]);
+  // The Working heading counts its threads per machine.
+  const counts = panel().querySelector('[data-active-kind="working"] [data-machine-counts]') as HTMLElement;
+  expect(counts.getAttribute("aria-label")).toBe("1 on Mac Mini");
+  expect(counts.querySelector('[data-machine="mini"]')).not.toBeNull();
+  expect(panel().querySelector('[data-active-kind="pinned"] [data-machine-counts]')).toBeNull();
+  // Pinning a child pins that child, not the desk above it.
+  fireEvent.click(pin("Child worker"));
+  fireEvent.click(pin("Pinned and quiet"));
+  await waitFor(() => {
+    const calls = slot.inspection.sidebarActionCalls.filter((call) => /pin/i.test(call.method));
+    expect(calls).toEqual([
+      expect.objectContaining({ threadId: "Child worker", pinned: true }),
+      expect.objectContaining({ threadId: "Pinned and quiet", pinned: false }),
+    ]);
+  });
+  slot.lifecycle.unmount();
+});
+
+test("Clicking a machine in the Working heading fades the other machines' rows; clicking it again shows all", async () => {
+  const app = await loadPluginApp(() => import("../app"));
+  const now = Date.now();
+  const mini = { id: "mini", name: "Peter’s Mac Mini" } as PluginSidebarThread["host"];
+  const mbp = { id: "mbp", name: "Peter’s MacBook Pro" } as PluginSidebarThread["host"];
+  const working = { activity: RUNNING, indicator: "background-agent" as const };
+  const threads = [
+    thread("Mini one", { ...working, host: mini, updatedAt: now - MINUTE }),
+    thread("Mini two", { ...working, host: mini, updatedAt: now - 2 * MINUTE }),
+    thread("Laptop one", { ...working, host: mbp, updatedAt: now - 3 * MINUTE }),
+  ];
+  const slot = mount(app, threads);
+  fireEvent.click(screen.getByRole("button", { name: /^Active:/ }));
+  const panel = () => screen.getByRole("tabpanel");
+  const count = (name: string) =>
+    panel().querySelector(`[data-machine-count="${name}"]`) as HTMLButtonElement;
+  await waitFor(() => expect(count("Mac Mini")).not.toBeNull());
+  // Busiest machine first.
+  expect(Array.from(panel().querySelectorAll("[data-machine-count]"), (node) => node.textContent)).toEqual(["2", "1"]);
+  const dimmed = () =>
+    Array.from(panel().querySelectorAll("[data-thread-row-id].cs-row-dimmed"), (node) => node.getAttribute("data-thread-row-id"));
+  expect(dimmed()).toEqual([]);
+
+  fireEvent.click(count("Mac Mini"));
+  expect(count("Mac Mini").getAttribute("aria-pressed")).toBe("true");
+  expect(dimmed()).toEqual(["Laptop one"]);
+
+  // Another machine moves the focus.
+  fireEvent.click(count("MacBook Pro"));
+  expect(dimmed()).toEqual(["Mini one", "Mini two"]);
+
+  // The same machine again shows all.
+  fireEvent.click(count("MacBook Pro"));
+  expect(count("MacBook Pro").getAttribute("aria-pressed")).toBe("false");
+  expect(dimmed()).toEqual([]);
   slot.lifecycle.unmount();
 });
