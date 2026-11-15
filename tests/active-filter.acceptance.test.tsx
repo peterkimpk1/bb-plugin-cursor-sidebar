@@ -177,12 +177,44 @@ test("Active keeps related workers flat without holder rows or collapse controls
   fireEvent.click(screen.getByRole("button", { name: /^Active:/ }));
   const panel = screen.getByRole("tabpanel");
   const ids = (kind: string) => Array.from(panel.querySelectorAll(`[data-active-kind="${kind}"] [data-thread-row-id]`), (row) => row.getAttribute("data-thread-row-id"));
-  await waitFor(() => expect(ids("pinned")).toEqual(["Pinned child", "Pinned parent"]));
+  await waitFor(() => expect(ids("pinned")).toEqual(["Pinned parent"]));
   expect(ids("working")).toEqual(["Active unpinned child", "Child", "Parent", "Sibling"]);
   expect(panel.querySelector('[data-thread-row-id="Desk"]')).toBeNull();
   expect(panel.querySelector('[data-thread-row-id="Quiet unpinned child"]')).toBeNull();
   expect(within(panel).queryAllByRole("button", { name: /child thread|collapse|expand/i })).toHaveLength(0);
   expect(panel.querySelector(".cs-folded-attention")).toBeNull();
+  slot.lifecycle.unmount();
+});
+
+test("Pinned substitutes coordinators for pinned children without collapse controls", async () => {
+  const app = await loadPluginApp(() => import("../app"));
+  const now = Date.now();
+  const slot = mount(app, [
+    thread("Coordinator", { hasPendingInteraction: true, indicator: "waiting-for-input", indicatorLabel: "Thread needs user input", updatedAt: now }),
+    thread("First pinned worker", { parentThreadId: "Coordinator", isPinned: true, updatedAt: now }),
+    thread("Second pinned worker", { parentThreadId: "Coordinator", isPinned: true, updatedAt: now - MINUTE }),
+    thread("Pinned grandchild", { parentThreadId: "First pinned worker", isPinned: true, updatedAt: now - MINUTE }),
+    thread("Single coordinator"),
+    thread("Only pinned child", { parentThreadId: "Single coordinator", isPinned: true, updatedAt: now - 2 * MINUTE }),
+    thread("Independent pin", { isPinned: true }),
+  ]);
+  fireEvent.click(screen.getByRole("button", { name: /^Active:/ }));
+  const panel = screen.getByRole("tabpanel");
+  const ids = () => Array.from(panel.querySelectorAll('[data-active-kind="pinned"] [data-thread-row-id]'), (row) => row.getAttribute("data-thread-row-id"));
+  await waitFor(() => expect(ids()).toEqual(["Coordinator", "Single coordinator", "Independent pin"]));
+  expect(within(panel).queryAllByRole("button", { name: /child thread|collapse|expand/i })).toHaveLength(0);
+  const coordinator = panel.querySelector('[data-thread-row-id="Coordinator"]') as HTMLElement;
+  expect(coordinator.querySelector(".cs-thread-info")?.getAttribute("aria-label")).toBe("NPI Manager · 3 pinned");
+  expect(panel.querySelectorAll('[data-thread-row-id="Coordinator"]')).toHaveLength(1);
+  expect(within(coordinator).getByRole("img", { name: "Thread needs user input" })).toBeTruthy();
+  const pin = coordinator.querySelector("[data-row-pin]") as HTMLButtonElement;
+  expect(pin.getAttribute("aria-pressed")).toBe("true");
+  fireEvent.click(pin);
+  await waitFor(() => expect(slot.inspection.sidebarActionCalls.filter((call) => /pin/i.test(call.method))).toEqual([
+    expect.objectContaining({ threadId: "First pinned worker", pinned: false }),
+    expect.objectContaining({ threadId: "Pinned grandchild", pinned: false }),
+    expect.objectContaining({ threadId: "Second pinned worker", pinned: false }),
+  ]));
   slot.lifecycle.unmount();
 });
 

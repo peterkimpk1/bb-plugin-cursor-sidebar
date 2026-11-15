@@ -4,11 +4,13 @@ import { Icon } from "@/components/ui/icon";
 import { cn } from "@/lib/utils";
 import { AnimatedList } from "./AnimatedList";
 import { ThreadRow, type TreeContext } from "./ThreadTree";
+import { worstThreadStatus } from "./status";
 import { MachineGlyph } from "./MachineGlyph";
 import {
   ACTIVE_KINDS,
   ACTIVE_KIND_LABEL,
   activeContext,
+  activeGroupTree,
   machineKind,
   type ActiveEntry,
   type ActiveKind,
@@ -25,6 +27,7 @@ interface ActiveGroup {
   inShelf: ReadonlySet<string>;
   /** How many of the kind's threads run on each machine, most first. */
   machines: readonly MachineCount[];
+  pinsByRow: ReadonlyMap<string, readonly PluginSidebarThread[]>;
 }
 
 interface MachineCount {
@@ -53,6 +56,7 @@ function countMachines(
 /** Active shows only each kind's own threads, as independent rows without folding. */
 export function ActiveView({
   entries,
+  threadOf,
   ctx,
   botNameOf,
   parentTitleOf,
@@ -61,6 +65,7 @@ export function ActiveView({
   machineOf,
 }: {
   entries: readonly ActiveEntry[];
+  threadOf: (threadId: string) => PluginSidebarThread | undefined;
   /** A context whose rows speak only for themselves: no subtree status, no drag. */
   ctx: TreeContext;
   botNameOf: (threadId: string) => string | null;
@@ -83,10 +88,30 @@ export function ActiveView({
       if (group === undefined) byKind.set(entry.kind, [entry]);
       else group.push(entry);
     }
+    const pinnedCoordinators = new Set<string>();
     return ACTIVE_KINDS.flatMap((kind) => {
-      const group = byKind.get(kind);
-      if (group === undefined) return [];
-      const members = group.map(({ thread }) => thread);
+      const group = byKind.get(kind)?.filter(({ thread }) => !pinnedCoordinators.has(thread.id));
+      if (group === undefined || group.length === 0) return [];
+      const pinsByRow = new Map<string, PluginSidebarThread[]>();
+      let members = group.map(({ thread }) => thread);
+      if (kind === "pinned") {
+        const tree = activeGroupTree(group, threadOf);
+        members = tree.members.filter((thread) => tree.parent.get(thread.id) === null);
+        for (const thread of members) pinnedCoordinators.add(thread.id);
+        for (const { thread } of group) {
+          let root = thread.id;
+          const seen = new Set<string>();
+          while (!seen.has(root)) {
+            seen.add(root);
+            const parent = tree.parent.get(root);
+            if (parent == null) break;
+            root = parent;
+          }
+          const pins = pinsByRow.get(root) ?? [];
+          pins.push(thread);
+          pinsByRow.set(root, pins);
+        }
+      }
       const section: ProjectSectionData = {
         id: `${ACTIVE_SECTION_ID}-${kind}`,
         name: ACTIVE_KIND_LABEL[kind],
@@ -101,14 +126,15 @@ export function ActiveView({
       return [
         {
           kind,
-          count: group.length,
+          count: members.length,
+          pinsByRow,
           section,
           inShelf: new Set(members.map((thread) => thread.id)),
           machines: MACHINE_COUNT_KINDS.has(kind) ? countMachines(group, machineOf) : [],
         },
       ];
     });
-  }, [entries, machineOf]);
+  }, [entries, machineOf, threadOf]);
 
   if (entries.length === 0) {
     return (
@@ -168,6 +194,19 @@ function ActiveGroupBlock({
   onToggleMachine: (name: string) => void;
 }) {
   const { kind, section, inShelf } = group;
+  const groupCtx = useMemo<TreeContext>(() => kind !== "pinned" ? ctx : {
+    ...ctx,
+    descendantsById: group.pinsByRow,
+    statusOf: (id) => worstThreadStatus([
+      ...section.members.filter((thread) => thread.id === id),
+      ...(group.pinsByRow.get(id) ?? []),
+    ]),
+    onTogglePin: (id, pinned) => {
+      for (const thread of group.pinsByRow.get(id) ?? []) {
+        ctx.onTogglePin(thread.id, pinned);
+      }
+    },
+  }, [ctx, group.pinsByRow, kind, section.members]);
   // The focus applies where its counts are, and only while that machine is listed here.
   const focus =
     focusedMachine !== null && group.machines.some((machine) => machine.name === focusedMachine)
@@ -222,9 +261,9 @@ function ActiveGroupBlock({
       <AnimatedList className="flex flex-col">
         {section.members.map((thread) => {
           const machineName = machineOf(thread);
-          const kind = machineKind(machineName);
+          const machineType = machineKind(machineName);
           // A known machine shows as a glyph; an unknown one keeps its name in the line.
-          const machineText = kind === null ? machineName : null;
+          const machineText = machineType === null ? machineName : null;
           return (
             <ThreadRow
               key={thread.id}
@@ -232,18 +271,18 @@ function ActiveGroupBlock({
               section={section}
               shelf="active"
               inShelf={inShelf}
-              ctx={ctx}
-              rootPinned={pinnedOf(thread.id)}
+              ctx={groupCtx}
+              rootPinned={kind === "pinned" || pinnedOf(thread.id)}
               inFolderId={null}
               pinVisible
               dimmed={focus !== null && machineName !== focus}
-              machine={kind !== null && machineName !== null ? { kind, name: machineName } : null}
+              machine={machineType !== null && machineName !== null ? { kind: machineType, name: machineName } : null}
               context={activeContext({
                 botName: botNameOf(thread.id),
-                parentTitle: parentTitleOf(thread),
+                parentTitle: kind === "pinned" ? null : parentTitleOf(thread),
                 projectName: projectNameOf(thread),
                 machineName: machineText,
-              })}
+              }) + (kind === "pinned" ? ` · ${group.pinsByRow.get(thread.id)?.length ?? 0} pinned` : "")}
             />
           );
         })}
