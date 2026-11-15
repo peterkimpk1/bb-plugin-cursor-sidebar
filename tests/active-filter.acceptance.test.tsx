@@ -161,46 +161,28 @@ test("Active shows an empty state when nothing matters right now", async () => {
   slot.lifecycle.unmount();
 });
 
-test("Active nests a child under its working parent and groups a desk's workers under it", async () => {
+test("Active keeps related workers flat without holder rows or collapse controls", async () => {
   const app = await loadPluginApp(() => import("../app"));
   const now = Date.now();
-  const threads = [
-    // A desk that is not itself working, with two working children.
-    thread("Chief desk", { updatedAt: now - 9 * HOUR }),
-    thread("Merge queue", { parentThreadId: "Chief desk", activity: RUNNING, indicator: "background-agent", updatedAt: now - 20 * MINUTE }),
-    thread("Orb dispatcher", { parentThreadId: "Chief desk", activity: RUNNING, indicator: "background-agent", updatedAt: now - 50 * MINUTE }),
-    // A working child of a working parent, updated in between.
-    thread("Requalify lanes", { parentThreadId: "Merge queue", activity: RUNNING, indicator: "background-agent", updatedAt: now - 2 * MINUTE }),
-    // A lone worker whose parent is off the list keeps its ↳ line at the top.
-    thread("Coordinate Products", { updatedAt: now - 9 * HOUR }),
-    thread("Fix Products controls", { parentThreadId: "Coordinate Products", activity: RUNNING, indicator: "background-agent", updatedAt: now - 30 * MINUTE }),
-    thread("Design UI", { activity: RUNNING, indicator: "background-agent", updatedAt: now - 10 * MINUTE }),
-  ];
-  const slot = mount(app, threads);
-  const chip = () => screen.getByRole("button", { name: /^Active:/ });
-  await waitFor(() => expect(chip()).toBeTruthy());
-  fireEvent.click(chip());
-  const panel = () => screen.getByRole("tabpanel");
-  const working = () => panel().querySelector('[data-active-kind="working"]') as HTMLElement;
-  const ids = () => Array.from(working().querySelectorAll("[data-thread-row-id]"), (node) => node.getAttribute("data-thread-row-id"));
-  // The desk family is newest (its grandchild ran 2 minutes ago), then Design UI, then the lone worker.
-  await waitFor(() =>
-    expect(ids()).toEqual(["Chief desk", "Merge queue", "Requalify lanes", "Orb dispatcher", "Design UI", "Fix Products controls"]),
-  );
-  // The heading counts real work, not the holder row.
-  expect(within(working()).getByRole("heading").textContent).toBe("Working5");
-  const row = (id: string) => working().querySelector(`[data-thread-row-id="${id}"]`) as HTMLElement;
-  const info = (id: string) => row(id).querySelector(".cs-thread-info")?.getAttribute("aria-label");
-  expect(info("Chief desk")).toBe("NPI Manager · 2 working");
-  expect(row("Chief desk").getAttribute("data-thread-shelf")).toBe("settled");
-  // Nested rows drop the ↳ parent; the lone worker keeps it.
-  expect(info("Requalify lanes")).toBe("NPI Manager");
-  expect(info("Fix Products controls")).toBe("NPI Manager · ↳ Coordinate Products");
-  // A family folds from its parent's toggle.
-  fireEvent.click(within(row("Merge queue")).getByRole("button", { name: "Hide 1 child thread" }));
-  await waitFor(() => expect(ids()).not.toContain("Requalify lanes"));
-  fireEvent.click(within(row("Merge queue")).getByRole("button", { name: "Show 1 child thread" }));
-  await waitFor(() => expect(ids()).toContain("Requalify lanes"));
+  const slot = mount(app, [
+    thread("Desk"),
+    thread("Parent", { parentThreadId: "Desk", activity: RUNNING, updatedAt: now - 2 * MINUTE }),
+    thread("Sibling", { parentThreadId: "Desk", activity: RUNNING, updatedAt: now - 3 * MINUTE }),
+    thread("Child", { parentThreadId: "Parent", activity: RUNNING, updatedAt: now - MINUTE }),
+    thread("Pinned parent", { isPinned: true }),
+    thread("Quiet unpinned child", { parentThreadId: "Pinned parent" }),
+    thread("Pinned child", { parentThreadId: "Pinned parent", isPinned: true, updatedAt: now - MINUTE }),
+    thread("Active unpinned child", { parentThreadId: "Pinned parent", activity: RUNNING, updatedAt: now }),
+  ]);
+  fireEvent.click(screen.getByRole("button", { name: /^Active:/ }));
+  const panel = screen.getByRole("tabpanel");
+  const ids = (kind: string) => Array.from(panel.querySelectorAll(`[data-active-kind="${kind}"] [data-thread-row-id]`), (row) => row.getAttribute("data-thread-row-id"));
+  await waitFor(() => expect(ids("pinned")).toEqual(["Pinned child", "Pinned parent"]));
+  expect(ids("working")).toEqual(["Active unpinned child", "Child", "Parent", "Sibling"]);
+  expect(panel.querySelector('[data-thread-row-id="Desk"]')).toBeNull();
+  expect(panel.querySelector('[data-thread-row-id="Quiet unpinned child"]')).toBeNull();
+  expect(within(panel).queryAllByRole("button", { name: /child thread|collapse|expand/i })).toHaveLength(0);
+  expect(panel.querySelector(".cs-folded-attention")).toBeNull();
   slot.lifecycle.unmount();
 });
 

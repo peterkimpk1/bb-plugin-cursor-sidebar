@@ -1095,10 +1095,7 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
     },
     [nativeProjectNameById, rawById],
   );
-  const activeThreadOf = useCallback(
-    (threadId: string) => visibleById.get(threadId) ?? rawById.get(threadId),
-    [rawById, visibleById],
-  );
+
   const activePinnedOf = useCallback(
     (threadId: string) => (visibleById.get(threadId) ?? rawById.get(threadId))?.isPinned ?? false,
     [rawById, visibleById],
@@ -1346,6 +1343,7 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
       onUpdate={sidebarView.update}
       environmentOptions={viewEnvironmentOptions}
       showNoEnvironment={hasEnvironmentlessOrdinary}
+      collapsible={!activeOn && !decisionsOn}
       anyCollapsed={anyCollapsed}
       onExpandAll={expandAll}
       onCollapseAll={collapseAll}
@@ -1447,7 +1445,6 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
                 parentTitleOf={activeParentTitleOf}
                 projectNameOf={activeProjectNameOf}
                 pinnedOf={activePinnedOf}
-                threadOf={activeThreadOf}
                 machineOf={activeMachineOf}
               />
             </div>

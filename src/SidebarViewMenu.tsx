@@ -43,6 +43,7 @@ export interface SidebarViewMenuRootProps {
   /** True when a loaded ordinary conversation has no environment. */
   showNoEnvironment: boolean;
   /** Every collapsible target in the controlled scope, for the bulk toggle. */
+  collapsible?: boolean;
   anyCollapsed: boolean;
   onExpandAll: () => void;
   onCollapseAll: () => void;
@@ -269,6 +270,7 @@ export function SidebarViewMenuRoot({
   onUpdate,
   environmentOptions,
   showNoEnvironment,
+  collapsible = true,
   anyCollapsed,
   onExpandAll,
   onCollapseAll,
@@ -465,12 +467,14 @@ export function SidebarViewMenuRoot({
           ) : null}
 
           <DropdownMenu.Separator className="my-1 h-px bg-border" />
+          {collapsible ? (
           <DropdownMenu.Item
             className={ITEM}
             onSelect={() => (anyCollapsed ? onExpandAll() : onCollapseAll())}
           >
             {anyCollapsed ? "Expand All" : "Collapse All"}
           </DropdownMenu.Item>
+          ) : null}
           <DropdownMenu.Item
             className={ITEM}
             disabled={markReadBusy || unreadOrdinaryCount === 0}

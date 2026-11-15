@@ -9,13 +9,12 @@ import {
   ACTIVE_KINDS,
   ACTIVE_KIND_LABEL,
   activeContext,
-  activeGroupTree,
   machineKind,
   type ActiveEntry,
   type ActiveKind,
   type MachineKind,
 } from "./active";
-import { flattenShelf, type ProjectSectionData } from "./forest";
+import type { ProjectSectionData } from "./forest";
 
 export const ACTIVE_SECTION_ID = "active";
 
@@ -23,9 +22,7 @@ interface ActiveGroup {
   kind: ActiveKind;
   count: number;
   section: ProjectSectionData;
-  holders: ReadonlySet<string>;
   inShelf: ReadonlySet<string>;
-  descendants: ReadonlyMap<string, readonly PluginSidebarThread[]>;
   /** How many of the kind's threads run on each machine, most first. */
   machines: readonly MachineCount[];
 }
@@ -53,32 +50,7 @@ function countMachines(
     .sort((left, right) => right.count - left.count || left.name.localeCompare(right.name));
 }
 
-function descendantsOf(children: ReadonlyMap<string, readonly PluginSidebarThread[]>) {
-  const result = new Map<string, PluginSidebarThread[]>();
-  const walk = (id: string, seen: Set<string>): PluginSidebarThread[] => {
-    const known = result.get(id);
-    if (known !== undefined) return known;
-    const below: PluginSidebarThread[] = [];
-    for (const child of children.get(id) ?? []) {
-      if (seen.has(child.id)) continue;
-      seen.add(child.id);
-      below.push(child, ...walk(child.id, seen));
-    }
-    result.set(id, below);
-    return below;
-  };
-  for (const id of children.keys()) walk(id, new Set([id]));
-  return result;
-}
-
-/**
- * The Active view: the threads that matter now, under a plain heading per
- * kind. Within a kind, a child sits under its nearest ancestor of the same
- * kind, and workers that share an off-list parent (a bot desk) sit under that
- * parent drawn muted, so related work reads as one family instead of rows
- * scattered by update time. Rows are the tree's own ThreadRow, so open, pin,
- * archive, folding and the menus behave as they do in the tree.
- */
+/** Active shows only each kind's own threads, as independent rows without folding. */
 export function ActiveView({
   entries,
   ctx,
@@ -86,7 +58,6 @@ export function ActiveView({
   parentTitleOf,
   projectNameOf,
   pinnedOf,
-  threadOf,
   machineOf,
 }: {
   entries: readonly ActiveEntry[];
@@ -95,27 +66,16 @@ export function ActiveView({
   botNameOf: (threadId: string) => string | null;
   parentTitleOf: (thread: PluginSidebarThread) => string | null;
   projectNameOf: (thread: PluginSidebarThread) => string | null;
-  /** The family's lifted pin state, which the row's pin toggle flips. */
+  /** The row's own pin state. */
   pinnedOf: (threadId: string) => boolean;
-  /** Any sidebar thread by id, for ancestors outside the Active list. */
-  threadOf: (threadId: string) => PluginSidebarThread | undefined;
   /** The short name of the machine a thread runs on, or null. */
   machineOf: (thread: PluginSidebarThread) => string | null;
 }) {
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(() => new Set());
   // One machine in focus fades the other machines' rows; clicking it again shows all.
   const [focusedMachine, setFocusedMachine] = useState<string | null>(null);
   const toggleMachine = useCallback((name: string) => {
     setFocusedMachine((current) => (current === name ? null : name));
   }, []);
-  const toggle = useCallback((threadId: string) => {
-    setCollapsed((current) => {
-      const next = new Set(current);
-      if (!next.delete(threadId)) next.add(threadId);
-      return next;
-    });
-  }, []);
-
   const groups = useMemo<ActiveGroup[]>(() => {
     const byKind = new Map<ActiveKind, ActiveEntry[]>();
     for (const entry of entries) {
@@ -126,16 +86,16 @@ export function ActiveView({
     return ACTIVE_KINDS.flatMap((kind) => {
       const group = byKind.get(kind);
       if (group === undefined) return [];
-      const tree = activeGroupTree(group, threadOf);
+      const members = group.map(({ thread }) => thread);
       const section: ProjectSectionData = {
         id: `${ACTIVE_SECTION_ID}-${kind}`,
         name: ACTIVE_KIND_LABEL[kind],
         known: true,
         personal: false,
-        members: tree.members,
-        forest: { parent: tree.parent, children: tree.children },
-        shelfById: new Map(tree.members.map((thread) => [thread.id, "active" as const])),
-        byShelf: { active: tree.members, settled: [] },
+        members,
+        forest: { parent: new Map(), children: new Map() },
+        shelfById: new Map(members.map((thread) => [thread.id, "active" as const])),
+        byShelf: { active: members, settled: [] },
         scopeIds: new Map(),
       };
       return [
@@ -143,14 +103,12 @@ export function ActiveView({
           kind,
           count: group.length,
           section,
-          holders: tree.holders,
-          inShelf: new Set(tree.members.map((thread) => thread.id)),
-          descendants: descendantsOf(tree.children),
+          inShelf: new Set(members.map((thread) => thread.id)),
           machines: MACHINE_COUNT_KINDS.has(kind) ? countMachines(group, machineOf) : [],
         },
       ];
     });
-  }, [entries, machineOf, threadOf]);
+  }, [entries, machineOf]);
 
   if (entries.length === 0) {
     return (
@@ -175,8 +133,6 @@ export function ActiveView({
           key={group.kind}
           group={group}
           ctx={ctx}
-          collapsed={collapsed}
-          onToggle={toggle}
           botNameOf={botNameOf}
           parentTitleOf={parentTitleOf}
           projectNameOf={projectNameOf}
@@ -193,8 +149,6 @@ export function ActiveView({
 function ActiveGroupBlock({
   group,
   ctx,
-  collapsed,
-  onToggle,
   botNameOf,
   parentTitleOf,
   projectNameOf,
@@ -205,8 +159,6 @@ function ActiveGroupBlock({
 }: {
   group: ActiveGroup;
   ctx: TreeContext;
-  collapsed: ReadonlySet<string>;
-  onToggle: (threadId: string) => void;
   botNameOf: (threadId: string) => string | null;
   parentTitleOf: (thread: PluginSidebarThread) => string | null;
   projectNameOf: (thread: PluginSidebarThread) => string | null;
@@ -215,30 +167,12 @@ function ActiveGroupBlock({
   focusedMachine: string | null;
   onToggleMachine: (name: string) => void;
 }) {
-  const { kind, section, holders, inShelf } = group;
+  const { kind, section, inShelf } = group;
   // The focus applies where its counts are, and only while that machine is listed here.
   const focus =
     focusedMachine !== null && group.machines.some((machine) => machine.name === focusedMachine)
       ? focusedMachine
       : null;
-  const onFocused = (thread: PluginSidebarThread): boolean =>
-    holders.has(thread.id)
-      ? (group.descendants.get(thread.id) ?? []).some((child) => machineOf(child) === focus)
-      : machineOf(thread) === focus;
-  const groupCtx = useMemo<TreeContext>(() => {
-    const parents = [...section.forest.children.keys()];
-    return {
-      ...ctx,
-      expandedParents: new Set(parents.filter((id) => !collapsed.has(id))),
-      onToggleChildren: onToggle,
-      descendantsById: group.descendants,
-    };
-  }, [collapsed, ctx, group.descendants, onToggle, section]);
-  const rows = useMemo(
-    () => flattenShelf(section, "active", (id) => groupCtx.expandedParents.has(id)),
-    [groupCtx.expandedParents, section],
-  );
-  const kindWord = ACTIVE_KIND_LABEL[kind].toLowerCase();
 
   return (
     <section aria-label={ACTIVE_KIND_LABEL[kind]} data-active-kind={kind} className="mt-2 first:mt-0">
@@ -286,11 +220,7 @@ function ActiveGroupBlock({
         ) : null}
       </h3>
       <AnimatedList className="flex flex-col">
-        {rows.map((row) => {
-          const { thread } = row;
-          const isHolder = holders.has(thread.id);
-          const nested = section.forest.parent.get(thread.id) != null;
-          const held = (section.forest.children.get(thread.id) ?? []).length;
+        {section.members.map((thread) => {
           const machineName = machineOf(thread);
           const kind = machineKind(machineName);
           // A known machine shows as a glyph; an unknown one keeps its name in the line.
@@ -298,29 +228,22 @@ function ActiveGroupBlock({
           return (
             <ThreadRow
               key={thread.id}
-              row={row}
+              row={{ thread, depth: 0, guides: [] }}
               section={section}
-              shelf={isHolder ? "settled" : "active"}
+              shelf="active"
               inShelf={inShelf}
-              ctx={groupCtx}
+              ctx={ctx}
               rootPinned={pinnedOf(thread.id)}
               inFolderId={null}
               pinVisible
-              dimmed={focus !== null && !onFocused(thread)}
+              dimmed={focus !== null && machineName !== focus}
               machine={kind !== null && machineName !== null ? { kind, name: machineName } : null}
-              context={
-                isHolder
-                  ? [botNameOf(thread.id), projectNameOf(thread), machineText, `${held} ${kindWord}`]
-                      .filter(Boolean)
-                      .join(" · ")
-                  : activeContext({
-                      botName: botNameOf(thread.id),
-                      // Nesting already shows the parent.
-                      parentTitle: nested ? null : parentTitleOf(thread),
-                      projectName: projectNameOf(thread),
-                      machineName: machineText,
-                    })
-              }
+              context={activeContext({
+                botName: botNameOf(thread.id),
+                parentTitle: parentTitleOf(thread),
+                projectName: projectNameOf(thread),
+                machineName: machineText,
+              })}
             />
           );
         })}
