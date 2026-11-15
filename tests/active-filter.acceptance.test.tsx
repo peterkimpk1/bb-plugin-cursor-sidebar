@@ -80,7 +80,7 @@ test("Active lists every thread that matters at any depth, flat, on both tabs, a
   let slot = mount(app, threads);
 
   const chip = () => screen.getByRole("button", { name: /^Active:/ });
-  await waitFor(() => expect(chip().getAttribute("aria-label")).toBe("Active: 5 threads, 1 needs you"));
+  await waitFor(() => expect(chip().getAttribute("aria-label")).toBe("Active: 3 threads, 1 needs you"));
   expect(chip().getAttribute("aria-pressed")).toBe("false");
 
   // Outside the Active view the folded parents carry their children's attention.
@@ -104,10 +104,10 @@ test("Active lists every thread that matters at any depth, flat, on both tabs, a
   expect(chip().getAttribute("aria-pressed")).toBe("true");
   const activeIds = () =>
     Array.from(panel().querySelectorAll("[data-active-view] [data-thread-row-id]"), (node) => node.getAttribute("data-thread-row-id"));
-  const expected = ["Asks a question", "Deep worker", "Broke unread", "Touched just now", "Touched an hour ago"];
+  const expected = ["Asks a question", "Deep worker", "Broke unread"];
   await waitFor(() => expect(activeIds()).toEqual(expected));
   expect(Array.from(panel().querySelectorAll("[data-active-kind]"), (node) => node.getAttribute("aria-label"))).toEqual([
-    "Needs you", "Working", "Failed", "Recent",
+    "Needs you", "Working", "Failed",
   ]);
   // Flat: no child toggles, no rails, and each row names its bot, project and parent.
   expect(within(panel()).queryAllByRole("button", { name: /child thread/ })).toHaveLength(0);
@@ -115,7 +115,8 @@ test("Active lists every thread that matters at any depth, flat, on both tabs, a
   expect(info("Asks a question")).toBe("Builder · NPI Manager · ↳ Builder desk");
   expect(info("Deep worker")).toBe("Builder · NPI Manager · ↳ Asks a question");
   expect(info("Broke unread")).toBe("NPI Manager · ↳ Plain root");
-  expect(info("Touched an hour ago")).toBe("Chats");
+  expect(row("Touched an hour ago")).toBeNull();
+  expect(row("Touched just now")).toBeNull();
   // A row speaks for itself here, and a raised hand outranks its own or its child's spinner.
   expect(within(row("Asks a question")!).getByRole("img", { name: "Thread needs user input" })).toBeTruthy();
 
@@ -153,7 +154,7 @@ test("Active lists every thread that matters at any depth, flat, on both tabs, a
 
 test("Active shows an empty state when nothing matters right now", async () => {
   const app = await loadPluginApp(() => import("../app"));
-  const slot = mount(app, [thread("Old and quiet"), thread("Read failure", { indicator: "unread-error" })]);
+  const slot = mount(app, [thread("Old and quiet"), thread("Recent idle pin", { isPinned: true, updatedAt: Date.now() }), thread("Read failure", { indicator: "unread-error" })]);
   await waitFor(() => expect(screen.getByRole("button", { name: /^Active:/ }).getAttribute("aria-label")).toBe("Active: 0 threads"));
   fireEvent.click(screen.getByRole("button", { name: /^Active:/ }));
   expect(await screen.findByText("All quiet")).toBeTruthy();
@@ -171,7 +172,7 @@ test("Active keeps related workers flat without holder rows or collapse controls
     thread("Child", { parentThreadId: "Parent", activity: RUNNING, updatedAt: now - MINUTE }),
     thread("Pinned parent", { isPinned: true }),
     thread("Quiet unpinned child", { parentThreadId: "Pinned parent" }),
-    thread("Pinned child", { parentThreadId: "Pinned parent", isPinned: true, updatedAt: now - MINUTE }),
+    thread("Pinned child", { activity: RUNNING, parentThreadId: "Pinned parent", isPinned: true, updatedAt: now - MINUTE }),
     thread("Active unpinned child", { parentThreadId: "Pinned parent", activity: RUNNING, updatedAt: now }),
   ]);
   fireEvent.click(screen.getByRole("button", { name: /^Active:/ }));
@@ -191,12 +192,12 @@ test("Pinned substitutes coordinators for pinned children without collapse contr
   const now = Date.now();
   const slot = mount(app, [
     thread("Coordinator", { hasPendingInteraction: true, indicator: "waiting-for-input", indicatorLabel: "Thread needs user input", updatedAt: now }),
-    thread("First pinned worker", { parentThreadId: "Coordinator", isPinned: true, updatedAt: now }),
-    thread("Second pinned worker", { parentThreadId: "Coordinator", isPinned: true, updatedAt: now - MINUTE }),
-    thread("Pinned grandchild", { parentThreadId: "First pinned worker", isPinned: true, updatedAt: now - MINUTE }),
+    thread("First pinned worker", { activity: RUNNING, parentThreadId: "Coordinator", isPinned: true, updatedAt: now }),
+    thread("Second pinned worker", { activity: RUNNING, parentThreadId: "Coordinator", isPinned: true, updatedAt: now - MINUTE }),
+    thread("Pinned grandchild", { activity: RUNNING, parentThreadId: "First pinned worker", isPinned: true, updatedAt: now - MINUTE }),
     thread("Single coordinator"),
-    thread("Only pinned child", { parentThreadId: "Single coordinator", isPinned: true, updatedAt: now - 2 * MINUTE }),
-    thread("Independent pin", { isPinned: true }),
+    thread("Only pinned child", { activity: RUNNING, parentThreadId: "Single coordinator", isPinned: true, updatedAt: now - 2 * MINUTE }),
+    thread("Independent pin", { activity: RUNNING, isPinned: true }),
   ]);
   fireEvent.click(screen.getByRole("button", { name: /^Active:/ }));
   const panel = screen.getByRole("tabpanel");
@@ -210,11 +211,33 @@ test("Pinned substitutes coordinators for pinned children without collapse contr
   const pin = coordinator.querySelector("[data-row-pin]") as HTMLButtonElement;
   expect(pin.getAttribute("aria-pressed")).toBe("true");
   fireEvent.click(pin);
-  await waitFor(() => expect(slot.inspection.sidebarActionCalls.filter((call) => /pin/i.test(call.method))).toEqual([
-    expect.objectContaining({ threadId: "First pinned worker", pinned: false }),
-    expect.objectContaining({ threadId: "Pinned grandchild", pinned: false }),
-    expect.objectContaining({ threadId: "Second pinned worker", pinned: false }),
-  ]));
+  await waitFor(() => {
+    const calls = slot.inspection.sidebarActionCalls.filter((call) => /pin/i.test(call.method));
+    expect(calls).toHaveLength(3);
+    expect(calls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ threadId: "First pinned worker", pinned: false }),
+      expect.objectContaining({ threadId: "Pinned grandchild", pinned: false }),
+      expect.objectContaining({ threadId: "Second pinned worker", pinned: false }),
+    ]));
+  });
+  slot.lifecycle.unmount();
+});
+
+test("Active keeps a running coordinator's idle pins but excludes idle pinned families", async () => {
+  const app = await loadPluginApp(() => import("../app"));
+  const slot = mount(app, [
+    thread("Running coordinator", { activity: RUNNING }),
+    thread("Idle saved child pin", { parentThreadId: "Running coordinator", isPinned: true }),
+    thread("Idle coordinator"),
+    thread("Recent idle saved child", { parentThreadId: "Idle coordinator", isPinned: true, updatedAt: Date.now() }),
+  ]);
+  await waitFor(() => expect(screen.getByRole("button", { name: /^Active:/ }).getAttribute("aria-label")).toBe("Active: 1 thread"));
+  fireEvent.click(screen.getByRole("button", { name: /^Active:/ }));
+  const panel = screen.getByRole("tabpanel");
+  const ids = Array.from(panel.querySelectorAll('[data-thread-row-id]'), (row) => row.getAttribute("data-thread-row-id"));
+  expect(ids).toEqual(["Running coordinator"]);
+  expect(panel.querySelector('[data-active-kind="pinned"]')).not.toBeNull();
+  expect(within(panel).queryAllByRole("button", { name: /child thread|collapse|expand/i })).toHaveLength(0);
   slot.lifecycle.unmount();
 });
 
@@ -224,7 +247,7 @@ test("Active keeps pinned threads on top, shows the pin on every row, pins the r
   const mini = { id: "mini", name: "Peter’s Mac Mini" } as PluginSidebarThread["host"];
   const threads = [
     thread("Desk", { updatedAt: now - 9 * HOUR }),
-    // Pinned and stale: still listed, under Pinned.
+    // A stale idle pin is excluded from Active.
     thread("Pinned and quiet", { isPinned: true, updatedAt: now - 9 * HOUR }),
     // Pinned and asking: under Pinned, and still counted as needing you.
     thread("Pinned and asking", { isPinned: true, hasPendingInteraction: true, indicator: "waiting-for-input", updatedAt: now - 5 * HOUR }),
@@ -232,7 +255,7 @@ test("Active keeps pinned threads on top, shows the pin on every row, pins the r
   ];
   const slot = mount(app, threads);
   const chip = () => screen.getByRole("button", { name: /^Active:/ });
-  await waitFor(() => expect(chip().getAttribute("aria-label")).toBe("Active: 3 threads, 1 needs you"));
+  await waitFor(() => expect(chip().getAttribute("aria-label")).toBe("Active: 2 threads, 1 needs you"));
   fireEvent.click(chip());
   const panel = () => screen.getByRole("tabpanel");
   await waitFor(() =>
@@ -242,13 +265,14 @@ test("Active keeps pinned threads on top, shows the pin on every row, pins the r
   );
   const pinned = panel().querySelector('[data-active-kind="pinned"]') as HTMLElement;
   expect(Array.from(pinned.querySelectorAll("[data-thread-row-id]"), (node) => node.getAttribute("data-thread-row-id"))).toEqual([
-    "Pinned and asking", "Pinned and quiet",
+    "Pinned and asking",
   ]);
   const row = (id: string) => panel().querySelector(`[data-thread-row-id="${id}"]`) as HTMLElement;
   // The pin sits on the row at rest, pressed and filled when pinned.
   const pin = (id: string) => row(id).querySelector("[data-row-pin]") as HTMLButtonElement;
-  expect(pin("Pinned and quiet").getAttribute("aria-pressed")).toBe("true");
-  expect(pin("Pinned and quiet").querySelector(".cs-pin-filled")).not.toBeNull();
+  expect(row("Pinned and quiet")).toBeNull();
+  expect(pin("Pinned and asking").getAttribute("aria-pressed")).toBe("true");
+  expect(pin("Pinned and asking").querySelector(".cs-pin-filled")).not.toBeNull();
   expect(pin("Child worker").getAttribute("aria-pressed")).toBe("false");
   expect(row("Child worker").querySelector("[data-thread-actions]")?.querySelector('[aria-label="Pin"]')).toBeNull();
   // The machine shows as its glyph; its name, without the owner's, moves to the hover text.
@@ -264,12 +288,12 @@ test("Active keeps pinned threads on top, shows the pin on every row, pins the r
   expect(panel().querySelector('[data-active-kind="pinned"] [data-machine-counts]')).toBeNull();
   // Pinning a child pins that child, not the desk above it.
   fireEvent.click(pin("Child worker"));
-  fireEvent.click(pin("Pinned and quiet"));
+  fireEvent.click(pin("Pinned and asking"));
   await waitFor(() => {
     const calls = slot.inspection.sidebarActionCalls.filter((call) => /pin/i.test(call.method));
     expect(calls).toEqual([
       expect.objectContaining({ threadId: "Child worker", pinned: true }),
-      expect.objectContaining({ threadId: "Pinned and quiet", pinned: false }),
+      expect.objectContaining({ threadId: "Pinned and asking", pinned: false }),
     ]);
   });
   slot.lifecycle.unmount();

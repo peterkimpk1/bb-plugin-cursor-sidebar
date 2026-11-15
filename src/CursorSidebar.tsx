@@ -1034,8 +1034,8 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
     },
     [setActiveOn, setDecisionsOn],
   );
-  const active = useMemo(() => activeEntries(visible, now), [now, visible]);
-  const activeNeedsYou = useMemo(() => active.filter((entry) => needsInput(entry.thread)).length, [active]);
+  const active = useMemo(() => activeEntries(visible), [visible]);
+  const activeNeedsYou = useMemo(() => active.filter((entry) => needsInput(entry.thread) || (entry.kind === "pinned" && entry.pins.some(needsInput))).length, [active]);
   const ownerByThread = useMemo(() => threadOwners(visible, botBindings ?? []), [botBindings, visible]);
   const botNameById = useMemo(
     () => new Map(bots.status === "ready" ? bots.bots.map((bot) => [bot.id, bot.name]) : []),
@@ -1096,10 +1096,6 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
     [nativeProjectNameById, rawById],
   );
 
-  const activeThreadOf = useCallback(
-    (threadId: string) => visibleById.get(threadId) ?? rawById.get(threadId),
-    [rawById, visibleById],
-  );
   const activePinnedOf = useCallback(
     (threadId: string) => (visibleById.get(threadId) ?? rawById.get(threadId))?.isPinned ?? false,
     [rawById, visibleById],
@@ -1444,7 +1440,6 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
             <div key="active" className="cs-grouping-swap" data-active-view="">
               <ActiveView
                 entries={active}
-                threadOf={activeThreadOf}
                 ctx={activeCtx}
                 botNameOf={activeBotNameOf}
                 parentTitleOf={activeParentTitleOf}

@@ -6,23 +6,19 @@ import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
 import { isWorking } from "./activity";
 import { isActivityIndicator } from "./StatusGlyph";
 
-/** A thread touched this recently counts as active even when it is quiet. */
-export const ACTIVE_RECENT_MS = 2 * 60 * 60 * 1000;
-
-export type ActiveKind = "pinned" | "input" | "working" | "failed" | "recent";
+export type ActiveKind = "pinned" | "input" | "working" | "failed";
 
 /**
  * Display order: what you pinned, then what needs you, then what runs, then
- * what broke, then the rest.
+ * what broke.
  */
-export const ACTIVE_KINDS: readonly ActiveKind[] = ["pinned", "input", "working", "failed", "recent"];
+export const ACTIVE_KINDS: readonly ActiveKind[] = ["pinned", "input", "working", "failed"];
 
 export const ACTIVE_KIND_LABEL: Record<ActiveKind, string> = {
   pinned: "Pinned",
   input: "Needs you",
   working: "Working",
   failed: "Failed",
-  recent: "Recent",
 };
 
 /**
@@ -30,16 +26,16 @@ export const ACTIVE_KIND_LABEL: Record<ActiveKind, string> = {
  * is the raised-hand half of `needsYou` in bots.ts; its unread-failure half is
  * the separate "failed" kind here.
  */
-export function activeKind(thread: PluginSidebarThread, now: number): ActiveKind | null {
+export function activeKind(thread: PluginSidebarThread): ActiveKind | null {
   if (thread.isArchived) return null;
-  // A pinned thread stays at the top whatever it is doing; its status glyph
-  // still says when it needs you.
-  if (thread.isPinned) return "pinned";
-  if (needsInput(thread)) return "input";
-  if (isWorking(thread) || isActivityIndicator(thread.indicator)) return "working";
-  if (thread.isUnread && thread.indicator === "unread-error") return "failed";
-  if (now - thread.updatedAt <= ACTIVE_RECENT_MS) return "recent";
-  return null;
+  const kind = needsInput(thread)
+    ? "input"
+    : isWorking(thread) || isActivityIndicator(thread.indicator)
+      ? "working"
+      : thread.isUnread && thread.indicator === "unread-error"
+        ? "failed"
+        : null;
+  return kind !== null && thread.isPinned ? "pinned" : kind;
 }
 
 /** The raised hand: a pending question or a thread waiting for input. */
@@ -63,24 +59,50 @@ export function machineKind(name: string | null | undefined): MachineKind | null
   return null;
 }
 
-export interface ActiveEntry {
-  thread: PluginSidebarThread;
-  kind: ActiveKind;
-}
+export type ActiveEntry =
+  | { thread: PluginSidebarThread; kind: "pinned"; pins: readonly PluginSidebarThread[] }
+  | { thread: PluginSidebarThread; kind: Exclude<ActiveKind, "pinned"> };
 
-/** The Active list: by kind in `ACTIVE_KINDS` order, newest activity first within a kind. */
-export function activeEntries(threads: readonly PluginSidebarThread[], now: number): ActiveEntry[] {
-  const rank = new Map(ACTIVE_KINDS.map((kind, index) => [kind, index]));
-  const entries: ActiveEntry[] = [];
-  for (const thread of threads) {
-    const kind = activeKind(thread, now);
-    if (kind !== null) entries.push({ thread, kind });
+/** Pins choose the family; current activity decides whether that family is shown. */
+export function activeEntries(threads: readonly PluginSidebarThread[]): ActiveEntry[] {
+  const byId = new Map(threads.map((thread) => [thread.id, thread]));
+  const pins = threads.filter((thread) => thread.isPinned && !thread.isArchived);
+  const tree = activeGroupTree(pins.map((thread) => ({ thread })), (id) => byId.get(id));
+  const pinsByRoot = new Map<string, PluginSidebarThread[]>();
+  for (const thread of pins) {
+    let root = thread.id;
+    const seen = new Set<string>();
+    while (!seen.has(root)) {
+      seen.add(root);
+      const parent = tree.parent.get(root);
+      if (parent == null) break;
+      root = parent;
+    }
+    const family = pinsByRoot.get(root) ?? [];
+    family.push(thread);
+    pinsByRoot.set(root, family);
   }
-  return entries.sort(
-    (left, right) =>
-      rank.get(left.kind)! - rank.get(right.kind)! ||
-      right.thread.updatedAt - left.thread.updatedAt ||
-      left.thread.id.localeCompare(right.thread.id),
+  const represented = new Set<string>();
+  const entries: ActiveEntry[] = [];
+  for (const root of tree.members) {
+    const family = pinsByRoot.get(root.id);
+    if (family === undefined) continue;
+    if (activeKind(root) === null && !family.some((thread) => activeKind(thread) !== null)) continue;
+    represented.add(root.id);
+    for (const thread of family) represented.add(thread.id);
+    entries.push({ thread: root, kind: "pinned", pins: family });
+  }
+  for (const thread of threads) {
+    if (represented.has(thread.id)) continue;
+    const kind = activeKind(thread);
+    if (kind !== null && kind !== "pinned") entries.push({ thread, kind });
+  }
+  const rank = new Map(ACTIVE_KINDS.map((kind, index) => [kind, index]));
+  const recency = (entry: ActiveEntry) => entry.kind === "pinned"
+    ? Math.max(entry.thread.updatedAt, ...entry.pins.map((thread) => thread.updatedAt))
+    : entry.thread.updatedAt;
+  return entries.sort((left, right) =>
+    rank.get(left.kind)! - rank.get(right.kind)! || recency(right) - recency(left) || left.thread.id.localeCompare(right.thread.id),
   );
 }
 
@@ -125,7 +147,7 @@ export interface ActiveGroupTree {
  * is available. Families sort by their latest pinned activity.
  */
 export function activeGroupTree(
-  entries: readonly ActiveEntry[],
+  entries: readonly Pick<ActiveEntry, "thread">[],
   threadOf: (threadId: string) => PluginSidebarThread | undefined,
 ): ActiveGroupTree {
   const inGroup = new Map(entries.map((entry) => [entry.thread.id, entry.thread]));

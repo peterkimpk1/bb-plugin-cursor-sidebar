@@ -10,7 +10,6 @@ import {
   ACTIVE_KINDS,
   ACTIVE_KIND_LABEL,
   activeContext,
-  activeGroupTree,
   machineKind,
   type ActiveEntry,
   type ActiveKind,
@@ -56,7 +55,6 @@ function countMachines(
 /** Active shows only each kind's own threads, as independent rows without folding. */
 export function ActiveView({
   entries,
-  threadOf,
   ctx,
   botNameOf,
   parentTitleOf,
@@ -65,7 +63,6 @@ export function ActiveView({
   machineOf,
 }: {
   entries: readonly ActiveEntry[];
-  threadOf: (threadId: string) => PluginSidebarThread | undefined;
   /** A context whose rows speak only for themselves: no subtree status, no drag. */
   ctx: TreeContext;
   botNameOf: (threadId: string) => string | null;
@@ -88,29 +85,13 @@ export function ActiveView({
       if (group === undefined) byKind.set(entry.kind, [entry]);
       else group.push(entry);
     }
-    const pinnedCoordinators = new Set<string>();
     return ACTIVE_KINDS.flatMap((kind) => {
-      const group = byKind.get(kind)?.filter(({ thread }) => !pinnedCoordinators.has(thread.id));
-      if (group === undefined || group.length === 0) return [];
-      const pinsByRow = new Map<string, PluginSidebarThread[]>();
-      let members = group.map(({ thread }) => thread);
-      if (kind === "pinned") {
-        const tree = activeGroupTree(group, threadOf);
-        members = tree.members.filter((thread) => tree.parent.get(thread.id) === null);
-        for (const thread of members) pinnedCoordinators.add(thread.id);
-        for (const { thread } of group) {
-          let root = thread.id;
-          const seen = new Set<string>();
-          while (!seen.has(root)) {
-            seen.add(root);
-            const parent = tree.parent.get(root);
-            if (parent == null) break;
-            root = parent;
-          }
-          const pins = pinsByRow.get(root) ?? [];
-          pins.push(thread);
-          pinsByRow.set(root, pins);
-        }
+      const group = byKind.get(kind);
+      if (group === undefined) return [];
+      const members = group.map(({ thread }) => thread);
+      const pinsByRow = new Map<string, readonly PluginSidebarThread[]>();
+      for (const entry of group) {
+        if (entry.kind === "pinned") pinsByRow.set(entry.thread.id, entry.pins);
       }
       const section: ProjectSectionData = {
         id: `${ACTIVE_SECTION_ID}-${kind}`,
@@ -134,7 +115,7 @@ export function ActiveView({
         },
       ];
     });
-  }, [entries, machineOf, threadOf]);
+  }, [entries, machineOf]);
 
   if (entries.length === 0) {
     return (
@@ -144,7 +125,7 @@ export function ActiveView({
         </span>
         <p className="text-xs font-medium text-sidebar-foreground/95">All quiet</p>
         <p className="mt-1 text-2xs leading-4 text-sidebar-foreground/73">
-          Nothing needs you, is running, or failed, and no thread changed in the last 2 hours.
+          Nothing is running, needs you, or has an unread failure.
         </p>
       </div>
     );
