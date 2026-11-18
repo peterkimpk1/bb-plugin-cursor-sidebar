@@ -65,6 +65,16 @@ export interface ProjectSectionData {
   scopeByThreadId?: ReadonlyMap<string, string>;
 }
 
+/**
+ * A thread's parent in the display tree. A pin belongs to the thread itself:
+ * a pinned thread starts its own family (it and its sub-threads), so it can be
+ * pinned, lifted into Pinned, filed and unpinned without touching its parent.
+ * Ownership (which bot a thread belongs to) still follows `parentThreadId`.
+ */
+export function displayParentThreadId(thread: PluginSidebarThread): string | null {
+  return thread.isPinned ? null : thread.parentThreadId;
+}
+
 /** Total, stable order: newest first, id as the tie-breaker. */
 function compareThreads(
   left: PluginSidebarThread,
@@ -89,7 +99,7 @@ export function buildDisplayForest(
   const nativeParent = new Map<string, string | null>();
 
   for (const thread of threads) {
-    const parentId = thread.parentThreadId;
+    const parentId = displayParentThreadId(thread);
     if (parentId !== null && parentId !== thread.id && memberIds.has(parentId)) {
       nativeParent.set(thread.id, parentId);
       const bucket = childBuckets.get(parentId);

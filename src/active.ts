@@ -59,50 +59,27 @@ export function machineKind(name: string | null | undefined): MachineKind | null
   return null;
 }
 
-export type ActiveEntry =
-  | { thread: PluginSidebarThread; kind: "pinned"; pins: readonly PluginSidebarThread[] }
-  | { thread: PluginSidebarThread; kind: Exclude<ActiveKind, "pinned"> };
+export interface ActiveEntry {
+  thread: PluginSidebarThread;
+  kind: ActiveKind;
+}
 
-/** Pins choose the family; current activity decides whether that family is shown. */
+/**
+ * The Active list: one row per thread, by kind in `ACTIVE_KINDS` order, newest
+ * activity first within a kind. A pinned thread gets its own row under Pinned
+ * while it is active, wherever it sits in its family.
+ */
 export function activeEntries(threads: readonly PluginSidebarThread[]): ActiveEntry[] {
-  const byId = new Map(threads.map((thread) => [thread.id, thread]));
-  const pins = threads.filter((thread) => thread.isPinned && !thread.isArchived);
-  const tree = activeGroupTree(pins.map((thread) => ({ thread })), (id) => byId.get(id));
-  const pinsByRoot = new Map<string, PluginSidebarThread[]>();
-  for (const thread of pins) {
-    let root = thread.id;
-    const seen = new Set<string>();
-    while (!seen.has(root)) {
-      seen.add(root);
-      const parent = tree.parent.get(root);
-      if (parent == null) break;
-      root = parent;
-    }
-    const family = pinsByRoot.get(root) ?? [];
-    family.push(thread);
-    pinsByRoot.set(root, family);
-  }
-  const represented = new Set<string>();
   const entries: ActiveEntry[] = [];
-  for (const root of tree.members) {
-    const family = pinsByRoot.get(root.id);
-    if (family === undefined) continue;
-    if (activeKind(root) === null && !family.some((thread) => activeKind(thread) !== null)) continue;
-    represented.add(root.id);
-    for (const thread of family) represented.add(thread.id);
-    entries.push({ thread: root, kind: "pinned", pins: family });
-  }
   for (const thread of threads) {
-    if (represented.has(thread.id)) continue;
     const kind = activeKind(thread);
-    if (kind !== null && kind !== "pinned") entries.push({ thread, kind });
+    if (kind !== null) entries.push({ thread, kind });
   }
   const rank = new Map(ACTIVE_KINDS.map((kind, index) => [kind, index]));
-  const recency = (entry: ActiveEntry) => entry.kind === "pinned"
-    ? Math.max(entry.thread.updatedAt, ...entry.pins.map((thread) => thread.updatedAt))
-    : entry.thread.updatedAt;
   return entries.sort((left, right) =>
-    rank.get(left.kind)! - rank.get(right.kind)! || recency(right) - recency(left) || left.thread.id.localeCompare(right.thread.id),
+    rank.get(left.kind)! - rank.get(right.kind)! ||
+    right.thread.updatedAt - left.thread.updatedAt ||
+    left.thread.id.localeCompare(right.thread.id),
   );
 }
 
@@ -125,92 +102,4 @@ export function activeContext(parts: {
   ]
     .filter((part): part is string => part !== null && part.trim().length > 0)
     .join(" · ");
-}
-
-/** One kind's rows as a small forest, so children sit under their parent. */
-export interface ActiveGroupTree {
-  /** Display order, parents before their children; includes holder rows. */
-  members: PluginSidebarThread[];
-  parent: Map<string, string | null>;
-  /** Each parent's children, the most recently active family first. */
-  children: Map<string, PluginSidebarThread[]>;
-  /**
-   * Parents outside this kind that hold one or more of its rows (a bot desk
-   * with several workers, say). They are drawn muted, only to group.
-   */
-  holders: Set<string>;
-}
-
-/**
- * Resolve pinned families before rendering only their roots. A pin belongs
- * under its nearest pinned ancestor, or its direct parent when that parent
- * is available. Families sort by their latest pinned activity.
- */
-export function activeGroupTree(
-  entries: readonly Pick<ActiveEntry, "thread">[],
-  threadOf: (threadId: string) => PluginSidebarThread | undefined,
-): ActiveGroupTree {
-  const inGroup = new Map(entries.map((entry) => [entry.thread.id, entry.thread]));
-  const nearestInGroup = (thread: PluginSidebarThread): string | null => {
-    const seen = new Set([thread.id]);
-    let parentId = thread.parentThreadId;
-    while (parentId !== null && !seen.has(parentId)) {
-      if (inGroup.has(parentId)) return parentId;
-      seen.add(parentId);
-      parentId = threadOf(parentId)?.parentThreadId ?? null;
-    }
-    return null;
-  };
-
-  const parent = new Map<string, string | null>();
-  const offParentCount = new Map<string, number>();
-  for (const thread of inGroup.values()) {
-    const ancestor = nearestInGroup(thread);
-    parent.set(thread.id, ancestor);
-    const direct = thread.parentThreadId;
-    if (ancestor === null && direct !== null) {
-      const holder = threadOf(direct);
-      if (holder !== undefined && !holder.isArchived) {
-        offParentCount.set(direct, (offParentCount.get(direct) ?? 0) + 1);
-      }
-    }
-  }
-  const holders = new Set([...offParentCount].filter(([, count]) => count >= 1).map(([id]) => id));
-  for (const thread of inGroup.values()) {
-    if (parent.get(thread.id) === null && thread.parentThreadId !== null && holders.has(thread.parentThreadId)) {
-      parent.set(thread.id, thread.parentThreadId);
-    }
-  }
-  for (const holderId of holders) parent.set(holderId, null);
-
-  const byId = (id: string) => inGroup.get(id) ?? threadOf(id)!;
-  const childIds = new Map<string, string[]>();
-  for (const [id, parentId] of parent) {
-    if (parentId === null) continue;
-    childIds.set(parentId, [...(childIds.get(parentId) ?? []), id]);
-  }
-  // A family's recency is its newest member in this kind; a holder's own
-  // update time does not count.
-  const recency = new Map<string, number>();
-  const recencyOf = (id: string): number => {
-    const known = recency.get(id);
-    if (known !== undefined) return known;
-    recency.set(id, 0);
-    const own = holders.has(id) ? 0 : byId(id).updatedAt;
-    const value = Math.max(own, ...(childIds.get(id) ?? []).map(recencyOf));
-    recency.set(id, value);
-    return value;
-  };
-  const byRecency = (left: string, right: string) =>
-    recencyOf(right) - recencyOf(left) || left.localeCompare(right);
-
-  const children = new Map<string, PluginSidebarThread[]>();
-  for (const [parentId, ids] of childIds) children.set(parentId, ids.sort(byRecency).map(byId));
-  const members: PluginSidebarThread[] = [];
-  const visit = (id: string) => {
-    members.push(byId(id));
-    for (const child of children.get(id) ?? []) visit(child.id);
-  };
-  [...parent].filter(([, parentId]) => parentId === null).map(([id]) => id).sort(byRecency).forEach(visit);
-  return { members, parent, children, holders };
 }

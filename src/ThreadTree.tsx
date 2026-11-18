@@ -317,7 +317,7 @@ export function PinnedList({ items, ctx }: { items: readonly LiftedPin[]; ctx: T
           shelf="active"
           inShelf={new Set(section.byShelf.active.map((thread) => thread.id))}
           ctx={ctx}
-          rootPinned
+          rootPinned={(ctx.rawById.get(row.thread.id) ?? row.thread).isPinned}
           inFolderId={null}
           activeRailLevels={rails.get(row.thread.id)?.levels}
           activeElbow={rails.get(row.thread.id)?.onPath ?? false}
@@ -408,12 +408,9 @@ export function ShelfList({
     (threadId: string): string | null => section.forest.parent.get(threadId) ?? null,
     [section],
   );
-  // A pin on any family member lifts the whole family into the global Pinned
-  // block, so a child's native pin reads as the family's. The set comes from
-  // the home's complete shelf, not the bounded render, so a pin on a child
-  // past the preview page lifts the family here exactly as the block does.
-  // An ungrouped list (a bot's conversations) has no Pinned block to lift
-  // into, but its pin toggle still has to read the family's real state.
+  // A pinned thread starts its own display family (see displayParentThreadId),
+  // so the pinned roots are exactly the pinned threads that head a family.
+  // The set comes from the home's complete shelf, not the bounded render.
   const pinnedFamilyRoots = useMemo(() => {
     const pinned = new Set<string>();
     for (const thread of section.byShelf[shelf]) {
@@ -421,11 +418,11 @@ export function ShelfList({
     }
     return pinned;
   }, [parentOf, section, shelf]);
-  // The pin label and toggle follow the family's lifted native state, never the
-  // cluster the row renders in.
+  // The pin label and toggle follow the row's own native pin, never its
+  // family's or the cluster the row renders in.
   const rootPinnedOf = useCallback(
-    (threadId: string): boolean => pinnedFamilyRoots.has(familyRootId(parentOf, threadId)),
-    [parentOf, pinnedFamilyRoots],
+    (threadId: string): boolean => ctx.rawById.get(threadId)?.isPinned ?? false,
+    [ctx.rawById],
   );
   const bumpChildPage = useCallback((parentId: string) => {
     setChildPages((current) => {
@@ -758,7 +755,7 @@ export function ThreadRow({
   shelf: ThreadShelf;
   inShelf: ReadonlySet<string>;
   ctx: TreeContext;
-  /** The family root's native pin state; the toggle flips the root. */
+  /** The row's own native pin state; the toggle flips this thread only. */
   rootPinned: boolean;
   /** The native folder this row renders inside, if any. */
   inFolderId: string | null;
@@ -821,14 +818,22 @@ export function ThreadRow({
   const shownWorkspace = ctx.view.show.environment && !hideGroupedWorkspace ? workspace : null;
   const shownLocation = ctx.view.show.host && !hideGroupedHost ? location : null;
   const join = (parts: readonly (string | null)[]) => parts.filter(Boolean).join(" · ");
-  const secondaryText = context !== null ? join([model, context]) : join([model, shownWorkspace, shownLocation]);
+  // A pinned child heads its own family here, away from its parent, so the
+  // line names the parent it came from.
+  const nativeParent =
+    native.parentThreadId !== null && (section.forest.parent.get(thread.id) ?? null) === null
+      ? ctx.rawById.get(native.parentThreadId) ?? ctx.visibleById.get(native.parentThreadId) ?? null
+      : null;
+  const liftedFrom = native.isPinned && nativeParent !== null ? `↳ ${threadDisplayTitle(nativeParent)}` : null;
+  const secondaryText =
+    context !== null ? join([model, context]) : join([model, shownWorkspace, shownLocation, liftedFrom]);
   // Hold the line open until the model arrives, so rows do not grow under the pointer.
   const secondary = secondaryText || (ctx.view.show.model && run === undefined ? "\u00a0" : "");
-  const secondaryMobile = context !== null ? secondaryText : join([model, shownWorkspace]);
+  const secondaryMobile = context !== null ? secondaryText : join([model, shownWorkspace, liftedFrom]);
   const secondaryTitle =
     context !== null
       ? join([machine?.name ?? null, secondaryText])
-      : join([model, shownWorkspace === null ? null : workspacePath ?? shownWorkspace, shownLocation]);
+      : join([model, shownWorkspace === null ? null : workspacePath ?? shownWorkspace, shownLocation, liftedFrom]);
   // The resting slot speaks for the whole subtree, so a collapsed parent still
   // shows a running or attention-seeking descendant instead of hiding it.
   const statusThread = statusSourceForGroup(

@@ -15,26 +15,14 @@ export function pinAllowed(archived: boolean): boolean {
 }
 
 /**
- * The native writes one pin toggle performs.
- *
- * An ordinary home lifts the family by pinning its root, and on unpin clears
- * every pinned member so a child pin that lifted the family is undone.
+ * The native writes one pin toggle performs: the toggled thread, and only it.
+ * Its parent, children and siblings keep their own pins.
  */
-export function planPinWrites(input: {
-  rootId: string;
-  familyIds: readonly string[];
-  pinnedMemberIds: readonly string[];
-  pinned: boolean;
-}): readonly PinWrite[] {
-  if (input.pinned) {
-    return [{ threadId: input.rootId, pinned: true }];
-  }
-  return input.familyIds
-    .filter((id) => input.pinnedMemberIds.includes(id))
-    .map((id) => ({ threadId: id, pinned: false }));
+export function planPinWrites(input: { threadId: string; pinned: boolean }): readonly PinWrite[] {
+  return [{ threadId: input.threadId, pinned: input.pinned }];
 }
 
-/** The row-menu label for a pin toggle. The toggle always lifts the whole family. */
+/** The row-menu label for a pin toggle on that row's own thread. */
 export function pinActionLabel(isPinned: boolean): string {
   return isPinned ? "Unpin" : "Pin";
 }

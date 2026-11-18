@@ -119,7 +119,11 @@ export function buildBotSection(
   for (const thread of members) {
     children.set(thread.id, [...(base.children.get(thread.id) ?? [])].sort(compare));
   }
-  const roots = members.filter((thread) => (base.parent.get(thread.id) ?? null) === null).sort(compare);
+  // A pinned conversation heads its own family (displayParentThreadId), so it
+  // sits at the top level of its bot's list, ahead of the unpinned ones.
+  const roots = members
+    .filter((thread) => (base.parent.get(thread.id) ?? null) === null)
+    .sort((left, right) => Number(right.isPinned) - Number(left.isPinned) || compare(left, right));
   // byShelf is in walk order: flattenShelf takes roots from it in this order.
   const ordered: PluginSidebarThread[] = [];
   const emitted = new Set<string>();

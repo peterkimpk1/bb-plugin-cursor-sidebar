@@ -11,7 +11,7 @@
 import type { PluginSidebarThread } from "@get-bb/plugin-sdk/app";
 import type { SidebarView } from "./server";
 import { AGE_GROUPS, bucketForTimestamp } from "./age-groups";
-import type { DisplayRow } from "./forest";
+import { displayParentThreadId, type DisplayRow } from "./forest";
 import { familyRootId } from "./standalone-groups";
 import {
   THREAD_STATUS_LABEL,
@@ -289,7 +289,7 @@ export function homeDisplayParentOf(
   return (threadId: string): string | null => {
     const thread = byId.get(threadId);
     if (thread === undefined) return null;
-    const parentId = thread.parentThreadId;
+    const parentId = displayParentThreadId(thread);
     if (parentId === null || parentId === threadId) return null;
     const parent = byId.get(parentId);
     if (parent === undefined || parent.projectId !== thread.projectId) return null;
@@ -450,12 +450,16 @@ export function filterOrdinaryThreads(
     keep.add(thread.id);
   }
   for (const id of matches) {
-    let cursor = byId.get(id)?.parentThreadId ?? null;
+    const parentOf = (threadId: string): string | null => {
+      const thread = byId.get(threadId);
+      return thread === undefined ? null : displayParentThreadId(thread);
+    };
+    let cursor = parentOf(id);
     const seen = new Set<string>([id]);
     while (cursor !== null && !seen.has(cursor)) {
       seen.add(cursor);
       keep.add(cursor);
-      cursor = byId.get(cursor)?.parentThreadId ?? null;
+      cursor = parentOf(cursor);
     }
   }
   return threads.filter((thread) => keep.has(thread.id));

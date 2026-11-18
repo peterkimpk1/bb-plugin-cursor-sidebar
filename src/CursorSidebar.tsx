@@ -25,6 +25,7 @@ import {
   activePathIds,
   buildPooledOrdinarySection,
   buildSections,
+  displayParentThreadId,
   flattenShelf,
   scopeOf,
   type ProjectSectionData,
@@ -368,7 +369,10 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
   const view = sidebarView.view;
   const familyRootOfId = useCallback(
     (threadId: string) =>
-      familyRootId((id) => rawById.get(id)?.parentThreadId ?? null, threadId),
+      familyRootId((id) => {
+        const thread = rawById.get(id);
+        return thread === undefined ? null : displayParentThreadId(thread);
+      }, threadId),
     [rawById],
   );
   // A pinned family and the open chat's family stay visible when an ordinary
@@ -590,67 +594,27 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
   const reportFolderMoveRef = useRef(reportFolderMove);
   reportFolderMoveRef.current = reportFolderMove;
 
-  // Pin a family: pinning writes the family root, which lifts the whole family
-  // into the home's Pinned group. Unpinning clears every member's pin (a child
-  // pin also lifts a family), reporting a partial failure instead of claiming
-  // success.
-  const applyFamilyPin = useCallback(async (
-    threadId: string,
-    section: ProjectSectionData | undefined,
-    pinned: boolean,
-  ): Promise<{ failed: string[] }> => {
-    const ids = familyOf(threadId);
-    const root = section
-      ? familyRootId((id) => section.forest.parent.get(id) ?? null, threadId)
-      : threadId;
-    if (pinned) {
-      const writes = planPinWrites({
-        rootId: root,
-        familyIds: ids,
-        pinnedMemberIds: [],
-        pinned: true,
-      });
-      for (const write of writes) await actions.setPinned(write.threadId, write.pinned);
-      return { failed: [] };
+  // A pin belongs to the thread it is set on. Pinning a child pins that child
+  // alone; the display tree then starts a family at it, so it lifts into
+  // Pinned with its own sub-threads and its parent stays where it was.
+  const applyPin = useCallback(async (threadId: string, pinned: boolean): Promise<void> => {
+    for (const write of planPinWrites({ threadId, pinned })) {
+      await actions.setPinned(write.threadId, write.pinned);
     }
-    const writes = planPinWrites({
-      rootId: root,
-      familyIds: ids,
-      pinnedMemberIds: ids.filter((id) => rawById.get(id)?.isPinned ?? false),
-      pinned: false,
-    });
-    const failed: string[] = [];
-    for (const write of writes) {
-      try {
-        await actions.setPinned(write.threadId, write.pinned);
-      } catch {
-        failed.push(write.threadId);
-      }
-    }
-    return { failed };
-  }, [actions, familyOf, rawById]);
+  }, [actions]);
 
   const togglePin = useCallback(async (threadId: string, pinned: boolean): Promise<void> => {
-    const section = homeSectionOf(threadId);
     try {
-      const { failed } = await applyFamilyPin(threadId, section, pinned);
+      await applyPin(threadId, pinned);
       const moved = visibleById.get(threadId);
       const title = moved ? threadDisplayTitle(moved) : "Chat";
-      if (pinned) {
-        setAnnouncement(`${title} pinned.`);
-      } else if (failed.length > 0) {
-        const message = `${title} unpinned, but ${failed.length} member${failed.length === 1 ? "" : "s"} stayed pinned.`;
-        setAnnouncement(message);
-        toast.error("Partial unpin", { description: message });
-      } else {
-        setAnnouncement(`${title} unpinned.`);
-      }
+      setAnnouncement(`${title} ${pinned ? "pinned" : "unpinned"}.`);
     } catch (cause) {
       toast.error(pinned ? "Could not pin the chat" : "Could not unpin the chat", {
         description: cause instanceof Error ? cause.message : String(cause),
       });
     }
-  }, [applyFamilyPin, homeSectionOf, visibleById]);
+  }, [applyPin, visibleById]);
 
   // A drag that ends on a folder or pin header files or (un)pins the whole
   // family with native state. Parts that already match are skipped, so
@@ -670,25 +634,18 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
       return;
     }
     if (pin === undefined) return;
-    const familyLifted = familyOf(movingId).some((id) => rawById.get(id)?.isPinned ?? false);
-    if (pin === familyLifted) return;
+    if (pin === (rawById.get(movingId)?.isPinned ?? false)) return;
     try {
-      const { failed } = await applyFamilyPin(movingId, section, pin);
+      await applyPin(movingId, pin);
       const moved = visibleById.get(movingId);
       const title = moved ? threadDisplayTitle(moved) : "Chat";
-      if (!pin && failed.length > 0) {
-        const message = `${title} unpinned, but ${failed.length} member${failed.length === 1 ? "" : "s"} stayed pinned.`;
-        setAnnouncement(message);
-        toast.error("Partial unpin", { description: message });
-      } else {
-        setAnnouncement(`${title} ${pin ? "pinned" : "unpinned"}.`);
-      }
+      setAnnouncement(`${title} ${pin ? "pinned" : "unpinned"}.`);
     } catch (cause) {
-      toast.error(pin ? "Could not pin the family" : "Could not unpin the family", {
+      toast.error(pin ? "Could not pin the chat" : "Could not unpin the chat", {
         description: cause instanceof Error ? cause.message : String(cause),
       });
     }
-  }, [applyFamilyPin, canPin, familyOf, homeSectionOf, rawById, visibleById]);
+  }, [applyPin, canPin, homeSectionOf, rawById, visibleById]);
   commitFolderPinDropRef.current = commitFolderPinDrop;
 
   // The ids a thread drag carries, from a pooled row to its native home's
@@ -1035,7 +992,7 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
     [setActiveOn, setDecisionsOn],
   );
   const active = useMemo(() => activeEntries(visible), [visible]);
-  const activeNeedsYou = useMemo(() => active.filter((entry) => needsInput(entry.thread) || (entry.kind === "pinned" && entry.pins.some(needsInput))).length, [active]);
+  const activeNeedsYou = useMemo(() => active.filter((entry) => needsInput(entry.thread)).length, [active]);
   const ownerByThread = useMemo(() => threadOwners(visible, botBindings ?? []), [botBindings, visible]);
   const botNameById = useMemo(
     () => new Map(bots.status === "ready" ? bots.bots.map((bot) => [bot.id, bot.name]) : []),
