@@ -404,6 +404,15 @@ export const cursorSidebarRpcContract = defineRpcContract({
     }),
     output: answerResultSchema,
   },
+  closeDecisionAnsweredElsewhere: {
+    // Close a decision already answered in a conversation; nobody is sent anything.
+    input: z.object({
+      projectId: z.string().trim().min(1),
+      taskId: z.string().trim().min(1),
+      note: z.string().max(4000),
+    }),
+    output: z.object({ ok: z.boolean(), error: z.string().nullable() }),
+  },
   retryDecisionDelivery: {
     // Send a recorded answer to its asking thread again.
     input: z.object({ projectId: z.string().trim().min(1), taskId: z.string().trim().min(1) }),
@@ -744,6 +753,9 @@ export default function plugin(bb: BbPluginApi) {
     },
     answerDecision(input) {
       return decisions.answer(input);
+    },
+    closeDecisionAnsweredElsewhere(input) {
+      return decisions.closeAnsweredElsewhere(input);
     },
     retryDecisionDelivery(input) {
       return decisions.retryDelivery(input);

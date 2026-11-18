@@ -117,6 +117,10 @@ export function DecisionsView({ decisions, onNavigate }: { decisions: Decisions;
                     if (isSettledDelivery(delivery)) toast.success(done, { description: row.title });
                     else toast.warning(`${done}, but the asking thread wasn’t told`, { description: row.title });
                   }}
+                  onAnsweredElsewhere={async (note) => {
+                    await decisions.closeAnsweredElsewhere(project.projectId, row.taskId, note);
+                    toast.success(`${row.key} closed as already answered`, { description: row.title });
+                  }}
                 />
               ))}
             </ul>
@@ -136,30 +140,36 @@ const BUTTON =
   "rounded-md px-2 py-1 text-xs font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring disabled:pointer-events-none disabled:opacity-50 max-md:min-h-9 pointer-coarse:min-h-9";
 const PRIMARY = cn(BUTTON, "bg-primary text-primary-foreground hover:bg-primary/90");
 const SECONDARY = cn(BUTTON, "border border-sidebar-border text-sidebar-foreground/90 hover:bg-sidebar-accent/60");
+const QUIET = cn(BUTTON, "text-sidebar-foreground/73 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground/90");
 
 function DecisionCard({
   row,
   onAnswer,
+  onAnsweredElsewhere,
   onNavigate,
 }: {
   row: DecisionRow;
   onAnswer: (answer: DecisionAnswer) => Promise<void>;
+  /** Close it as answered in a conversation; the note, if any, says what was decided. */
+  onAnsweredElsewhere: (note: string) => Promise<void>;
   onNavigate: () => void;
 }) {
   const [open, setOpen] = useState(false);
-  // "answer" writes a different pick; "decline" refuses an approval.
-  const [draft, setDraft] = useState<"answer" | "decline" | null>(null);
+  // "answer" writes a different pick; "decline" refuses an approval;
+  // "elsewhere" closes one already answered in a conversation.
+  const [draft, setDraft] = useState<"answer" | "decline" | "elsewhere" | null>(null);
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const noteId = useId();
   const approval = row.kind === "approval";
 
-  const send = async (answer: DecisionAnswer) => {
+  const send = async (answer: DecisionAnswer | { kind: "elsewhere"; note: string }) => {
     setBusy(true);
     setError(null);
     try {
-      await onAnswer(answer);
+      if (answer.kind === "elsewhere") await onAnsweredElsewhere(answer.note);
+      else await onAnswer(answer);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -229,17 +239,31 @@ function DecisionCard({
               </button>
             </>
           )}
+          {/* Answered in a conversation, or before any thread could record it: close the record. */}
+          <button
+            type="button"
+            className={QUIET}
+            disabled={busy}
+            title="You already answered this in a conversation: close the task without sending anything"
+            onClick={() => setDraft("elsewhere")}
+          >
+            Already answered…
+          </button>
         </div>
       ) : (
         <form
           className="mt-2"
           onSubmit={(event) => {
             event.preventDefault();
-            void send({ kind: draft, note });
+            void send(draft === "elsewhere" ? { kind: "elsewhere", note } : { kind: draft, note });
           }}
         >
           <label htmlFor={noteId} className="sr-only">
-            {draft === "decline" ? "Why you are declining (optional)" : "Your answer"}
+            {draft === "decline"
+              ? "Why you are declining (optional)"
+              : draft === "elsewhere"
+                ? "What you decided (optional)"
+                : "Your answer"}
           </label>
           <textarea
             id={noteId}
@@ -250,12 +274,18 @@ function DecisionCard({
             // The field opened because you asked for it.
             autoFocus
             disabled={busy}
-            placeholder={draft === "decline" ? "Why, and what would change your mind (optional)" : "The pick, in your words"}
+            placeholder={
+              draft === "decline"
+                ? "Why, and what would change your mind (optional)"
+                : draft === "elsewhere"
+                  ? "What you decided, for the record (optional)"
+                  : "The pick, in your words"
+            }
             className="block w-full resize-y rounded-md border border-sidebar-border bg-transparent px-2 py-1.5 text-xs leading-4 text-sidebar-foreground placeholder:text-sidebar-foreground/50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring"
           />
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             <button type="submit" className={PRIMARY} disabled={busy || (draft === "answer" && note.trim().length === 0)}>
-              {busy ? "Saving…" : draft === "decline" ? "Decline" : "Send answer"}
+              {busy ? "Saving…" : draft === "decline" ? "Decline" : draft === "elsewhere" ? "Close as answered" : "Send answer"}
             </button>
             <button
               type="button"

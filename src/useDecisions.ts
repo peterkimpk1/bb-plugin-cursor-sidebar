@@ -39,6 +39,8 @@ export interface Decisions {
    * it. Resolves with what Opsdesk reported about telling the asker.
    */
   answer: (projectId: string, taskId: string, answer: DecisionAnswer) => Promise<DecisionDelivery | null>;
+  /** Closes a decision already answered elsewhere, sending nothing; throws Opsdesk's error. */
+  closeAnsweredElsewhere: (projectId: string, taskId: string, note: string) => Promise<void>;
   /** Sends an undelivered answer again; throws Opsdesk's error. */
   retryDelivery: (projectId: string, taskId: string) => Promise<DecisionDelivery | null>;
   /** Leaves an answer undelivered on purpose; throws Opsdesk's error. */
@@ -167,6 +169,20 @@ export function useDecisions(watching: boolean): Decisions {
     [patchProject, refresh, rpc],
   );
 
+  /** Close a card already answered elsewhere. Nothing is sent, so it just leaves the list. */
+  const closeAnsweredElsewhere = useCallback(
+    async (projectId: string, taskId: string, note: string) => {
+      const result = await rpc.call("closeDecisionAnsweredElsewhere", { projectId, taskId, note });
+      if (!result.ok) {
+        void refresh(true);
+        throw new Error(result.error ?? "Opsdesk did not close the decision.");
+      }
+      patchProject(projectId, (project) => ({ ...project, rows: project.rows.filter((row) => row.taskId !== taskId) }));
+      void refresh(true);
+    },
+    [patchProject, refresh, rpc],
+  );
+
   const retryDelivery = useCallback(
     async (projectId: string, taskId: string) => {
       const result = await rpc.call("retryDecisionDelivery", { projectId, taskId });
@@ -202,6 +218,7 @@ export function useDecisions(watching: boolean): Decisions {
     overdue: rows.filter((row) => row.isOverdue && !row.hasDefaulted).length,
     refresh,
     answer,
+    closeAnsweredElsewhere,
     retryDelivery,
     acknowledgeDelivery,
   };

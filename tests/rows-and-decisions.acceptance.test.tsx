@@ -449,3 +449,55 @@ test("closing a task in one project removes only that project's card, matched by
   expect(answers).toEqual([{ projectId: "beta", taskId: "B-1", answer: { kind: "accept-default" } }]);
   slot.lifecycle.unmount();
 });
+
+test("Already answered closes a card answered in a conversation, with or without a note, and never answers it", async () => {
+  let rows = [
+    decision("2881", { title: "Which workflow toast direction?" }),
+    decision("2803", { kind: "approval", defaultPick: null, title: "Choose the U1 path?" }),
+  ];
+  const closes: unknown[] = [];
+  const answers: unknown[] = [];
+  let refuse: string | null = null;
+  const slot = await mount({
+    threadRuns: noRuns,
+    decisions: () => ({ available: true, reason: null, projects: [{ projectId: "npi", name: "npi-manager", error: null, rows, undelivered: [] }] }),
+    answerDecision: (input) => {
+      answers.push(input);
+      return { ok: true, error: null, delivery: null };
+    },
+    closeDecisionAnsweredElsewhere: (input) => {
+      if (refuse !== null) return { ok: false, error: refuse };
+      closes.push(input);
+      rows = rows.filter((row) => row.taskId !== input.taskId);
+      return { ok: true, error: null };
+    },
+  }, [thread("Anything")]);
+
+  fireEvent.click(await screen.findByRole("button", { name: "Decisions: 2 waiting on you" }));
+  const panel = (await screen.findByText("Which workflow toast direction?")).closest("[role=tabpanel]") as HTMLElement;
+  const card = (title: string) => within(panel).getByText(title).closest("li") as HTMLElement;
+  // Both kinds offer it, beside their own answers.
+  expect(within(card("Choose the U1 path?")).getByRole("button", { name: "Already answered…" })).toBeTruthy();
+
+  // A refusal stays on the card and closes nothing.
+  refuse = "An answer to NM-2881 from the inbox is still being recorded.";
+  fireEvent.click(within(card("Which workflow toast direction?")).getByRole("button", { name: "Already answered…" }));
+  fireEvent.change(within(card("Which workflow toast direction?")).getByLabelText("What you decided (optional)"), { target: { value: "Steer" } });
+  await act(async () => { fireEvent.click(within(card("Which workflow toast direction?")).getByRole("button", { name: "Close as answered" })); });
+  expect((await within(card("Which workflow toast direction?")).findByRole("alert")).textContent).toContain("still being recorded");
+  refuse = null;
+
+  await act(async () => { fireEvent.click(within(card("Which workflow toast direction?")).getByRole("button", { name: "Close as answered" })); });
+  await waitFor(() => expect(within(panel).queryByText("Which workflow toast direction?")).toBeNull());
+  // An empty note is fine: it just closes the record.
+  fireEvent.click(within(card("Choose the U1 path?")).getByRole("button", { name: "Already answered…" }));
+  await act(async () => { fireEvent.click(within(card("Choose the U1 path?")).getByRole("button", { name: "Close as answered" })); });
+  await waitFor(() => expect(within(panel).getByText("Nothing is waiting on you")).toBeTruthy());
+
+  expect(closes).toEqual([
+    { projectId: "npi", taskId: "2881", note: "Steer" },
+    { projectId: "npi", taskId: "2803", note: "" },
+  ]);
+  expect(answers).toEqual([]);
+  slot.lifecycle.unmount();
+});

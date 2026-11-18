@@ -169,6 +169,17 @@ export function createDecisionsBridge(sdk: Sdk) {
       shared = null;
       return result;
     },
+    /** Close a decision already answered elsewhere; Opsdesk sends nothing. */
+    async closeAnsweredElsewhere(input: { projectId: string; taskId: string; note: string }) {
+      const result = await sdk.plugins.callRpc({
+        pluginId: OPSDESK_PLUGIN_ID,
+        method: "closeDecisionAnsweredElsewhere",
+        input,
+        outputSchema: acknowledgeResultSchema,
+      });
+      shared = null;
+      return result;
+    },
     async retryDelivery(input: { projectId: string; taskId: string }) {
       const result = await sdk.plugins.callRpc({
         pluginId: OPSDESK_PLUGIN_ID,
