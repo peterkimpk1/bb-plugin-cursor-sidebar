@@ -110,7 +110,8 @@ import { DecisionsView } from "./DecisionsView";
 import { useDecisions } from "./useDecisions";
 import { useBots } from "./useBots";
 import { membersByBot, threadOwners } from "./bots";
-import { activeEntries, needsInput, shortMachineName } from "./active";
+import { activeEntries, needsInput, searchEntries, shortMachineName } from "./active";
+import { FindBar } from "./FindBar";
 import { ActiveView } from "./ActiveView";
 import { BotsView, useBotModels } from "./BotsView";
 
@@ -1006,8 +1007,7 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
     () => ({
       ...botsCtx,
       descendantsById: new Map(),
-      // Active pins the row itself, not its family's root, so pinning a child
-      // there pins that child. The tree still lifts the family it belongs to.
+      // A flat row pins its own thread, as every row does.
       canPin: (threadId: string) => {
         const thread = visibleById.get(threadId) ?? rawById.get(threadId);
         return thread !== undefined && pinAllowed(thread.isArchived);
@@ -1060,6 +1060,40 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
   const activeMachineOf = useCallback(
     (thread: PluginSidebarThread) => shortMachineName((rawById.get(thread.id) ?? thread).host?.name),
     [rawById],
+  );
+
+  // Find: every non-archived thread, matched on the words a row shows.
+  const [query, setQuery] = useState("");
+  const searching = query.trim().length > 0;
+  const search = useMemo(
+    () =>
+      searchEntries(visible, query, (thread) => {
+        const native = rawById.get(thread.id) ?? thread;
+        return [
+          threadDisplayTitle(thread),
+          native.titleFallback,
+          thread.id,
+          activeProjectNameOf(thread),
+          activeBotNameOf(thread.id),
+          activeParentTitleOf(thread),
+          native.host?.name ?? null,
+          native.environment?.branchName ?? null,
+        ];
+      }),
+    [activeBotNameOf, activeParentTitleOf, activeProjectNameOf, query, rawById, visible],
+  );
+  const markThreadsRead = useCallback(
+    (ids: readonly string[]) => {
+      void Promise.allSettled(ids.map((id) => actions.setRead(id, true))).then((results) => {
+        const failed = results.filter((result) => result.status === "rejected").length;
+        if (failed > 0) {
+          toast.error(`Marked ${ids.length - failed} of ${ids.length} as read.`, { description: `${failed} could not be updated.` });
+          return;
+        }
+        setAnnouncement(`${ids.length} thread${ids.length === 1 ? "" : "s"} marked read.`);
+      });
+    },
+    [actions],
   );
 
   const markAllRead = useCallback(async () => {
@@ -1300,7 +1334,7 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
       onUpdate={sidebarView.update}
       environmentOptions={viewEnvironmentOptions}
       showNoEnvironment={hasEnvironmentlessOrdinary}
-      collapsible={!activeOn && !decisionsOn}
+      collapsible={!activeOn && !decisionsOn && !searching}
       anyCollapsed={anyCollapsed}
       onExpandAll={expandAll}
       onCollapseAll={collapseAll}
@@ -1335,7 +1369,8 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
           </>
         }
       />
-      {tab === "threads" ? <SidebarViewSyncNotice sync={sidebarView.sync} onRetry={sidebarView.retry} /> : null}
+      <FindBar query={query} onChange={setQuery} />
+      {tab === "threads" && !searching ? <SidebarViewSyncNotice sync={sidebarView.sync} onRetry={sidebarView.retry} /> : null}
 
       <div
         ref={listRef}
@@ -1389,7 +1424,22 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
               setIconPicker(null);
             }}
           />
-          {decisionsOn ? (
+          {searching ? (
+            <div key="search" className="cs-grouping-swap" data-search-view="">
+              <ActiveView
+                entries={search.entries}
+                moreIdle={search.moreIdle}
+                query={query.trim()}
+                ctx={activeCtx}
+                botNameOf={activeBotNameOf}
+                parentTitleOf={activeParentTitleOf}
+                projectNameOf={activeProjectNameOf}
+                pinnedOf={activePinnedOf}
+                machineOf={activeMachineOf}
+                onMarkRead={markThreadsRead}
+              />
+            </div>
+          ) : decisionsOn ? (
             <div key="decisions" className="cs-grouping-swap" data-decisions-view="">
               <DecisionsView decisions={decisions} onNavigate={ctx.onNavigate} />
             </div>
@@ -1403,6 +1453,7 @@ export function CursorSidebar({ activeThreadId, onNavigate }: PluginThreadListPr
                 projectNameOf={activeProjectNameOf}
                 pinnedOf={activePinnedOf}
                 machineOf={activeMachineOf}
+                onMarkRead={markThreadsRead}
               />
             </div>
           ) : tab === "bots" ? (

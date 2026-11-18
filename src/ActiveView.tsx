@@ -59,6 +59,9 @@ export function ActiveView({
   projectNameOf,
   pinnedOf,
   machineOf,
+  onMarkRead,
+  query = null,
+  moreIdle = 0,
 }: {
   entries: readonly ActiveEntry[];
   /** A context whose rows speak only for themselves: no subtree status, no drag. */
@@ -70,7 +73,15 @@ export function ActiveView({
   pinnedOf: (threadId: string) => boolean;
   /** The short name of the machine a thread runs on, or null. */
   machineOf: (thread: PluginSidebarThread) => string | null;
+  /** Mark these threads read; the Unread heading offers it for its rows. */
+  onMarkRead?: (threadIds: readonly string[]) => void;
+  /** The search these rows answer, or null for the Active view itself. */
+  query?: string | null;
+  /** Quiet matches past the search's cap. */
+  moreIdle?: number;
 }) {
+  // A kind chip shows that kind alone; clicking it again shows every kind.
+  const [focusedKind, setFocusedKind] = useState<ActiveKind | null>(null);
   // One machine in focus fades the other machines' rows; clicking it again shows all.
   const [focusedMachine, setFocusedMachine] = useState<string | null>(null);
   const toggleMachine = useCallback((name: string) => {
@@ -109,6 +120,23 @@ export function ActiveView({
       ];
     });
   }, [entries, machineOf]);
+  // A focus on a kind that has emptied out lets every kind show again.
+  const kindFocus = focusedKind !== null && groups.some((group) => group.kind === focusedKind) ? focusedKind : null;
+  const shown = kindFocus === null ? groups : groups.filter((group) => group.kind === kindFocus);
+
+  if (entries.length === 0 && query !== null) {
+    return (
+      <div className="mx-1.5 mt-2 flex flex-col items-center rounded-lg border border-dashed border-sidebar-border px-4 py-6 text-center" data-search-empty="">
+        <span className="mb-2 flex size-8 items-center justify-center rounded-md bg-sidebar-accent/60 text-sidebar-foreground/73">
+          <Icon name="Search" className="size-4" />
+        </span>
+        <p className="text-xs font-medium text-sidebar-foreground/95">No thread matches “{query}”</p>
+        <p className="mt-1 text-2xs leading-4 text-sidebar-foreground/73">
+          Search reads titles, task keys, projects, bots, parent threads and machines. Archived threads are left out.
+        </p>
+      </div>
+    );
+  }
 
   if (entries.length === 0) {
     return (
@@ -118,7 +146,7 @@ export function ActiveView({
         </span>
         <p className="text-xs font-medium text-sidebar-foreground/95">All quiet</p>
         <p className="mt-1 text-2xs leading-4 text-sidebar-foreground/73">
-          Nothing is running, needs you, or has an unread failure.
+          Nothing is running, needs you, failed, or finished unread.
         </p>
       </div>
     );
@@ -128,7 +156,37 @@ export function ActiveView({
     /* Each kind is its own block so a thread changing kind slides from one
        heading to the next, and an emptied heading leaves on the same curve. */
     <AnimatedList as="div" className="flex flex-col">
-      {groups.map((group) => (
+      {groups.length > 1 ? (
+        <div role="group" aria-label="Show one kind" data-kind-chips="" className="mb-1 flex flex-wrap gap-1 px-1.5">
+          {groups.map((group) => {
+            const pressed = kindFocus === group.kind;
+            const label = ACTIVE_KIND_LABEL[group.kind];
+            return (
+              <button
+                key={group.kind}
+                type="button"
+                aria-pressed={pressed}
+                data-kind-chip={group.kind}
+                title={pressed ? "Show every kind" : `Show only ${label.toLowerCase()}`}
+                onClick={() => setFocusedKind(pressed ? null : group.kind)}
+                className={cn(
+                  "inline-flex h-6 items-center gap-1 rounded-md border px-1.5 text-2xs font-medium transition-colors max-md:h-8 pointer-coarse:h-8",
+                  "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring",
+                  pressed
+                    ? "border-transparent bg-sidebar-accent text-sidebar-foreground/95"
+                    : "border-sidebar-border text-sidebar-foreground/73 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground/90",
+                )}
+              >
+                {label}
+                <span className={cn("tabular-nums", group.kind === "input" ? "cs-needs-you-count" : "text-sidebar-foreground/50")}>
+                  {group.count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+      {shown.map((group) => (
         <ActiveGroupBlock
           key={group.kind}
           group={group}
@@ -140,8 +198,14 @@ export function ActiveView({
           machineOf={machineOf}
           focusedMachine={focusedMachine}
           onToggleMachine={toggleMachine}
+          onMarkRead={group.kind === "unread" ? onMarkRead : undefined}
         />
       ))}
+      {moreIdle > 0 && (kindFocus === null || kindFocus === "idle") ? (
+        <p className="px-3 pt-1 text-2xs text-sidebar-foreground/60" data-search-more="">
+          {moreIdle} older match{moreIdle === 1 ? "" : "es"} not shown. Add a word to narrow the search.
+        </p>
+      ) : null}
     </AnimatedList>
   );
 }
@@ -156,6 +220,7 @@ function ActiveGroupBlock({
   machineOf,
   focusedMachine,
   onToggleMachine,
+  onMarkRead,
 }: {
   group: ActiveGroup;
   ctx: TreeContext;
@@ -166,6 +231,7 @@ function ActiveGroupBlock({
   machineOf: (thread: PluginSidebarThread) => string | null;
   focusedMachine: string | null;
   onToggleMachine: (name: string) => void;
+  onMarkRead?: ((threadIds: readonly string[]) => void) | undefined;
 }) {
   const { kind, section, inShelf } = group;
   // The focus applies where its counts are, and only while that machine is listed here.
@@ -217,6 +283,16 @@ function ActiveGroupBlock({
               );
             })}
           </span>
+        ) : null}
+        {onMarkRead !== undefined ? (
+          <button
+            type="button"
+            data-mark-read=""
+            onClick={() => onMarkRead(section.members.map((thread) => thread.id))}
+            className="ml-auto inline-flex h-5 items-center rounded px-1 text-2xs font-medium text-sidebar-foreground/60 hover:bg-sidebar-accent/60 hover:text-sidebar-foreground/90 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-sidebar-ring max-md:h-8 pointer-coarse:h-8"
+          >
+            Mark all read
+          </button>
         ) : null}
       </h3>
       <AnimatedList className="flex flex-col">
